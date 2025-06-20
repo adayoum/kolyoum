@@ -23,7 +23,7 @@ API_URL = os.environ.get("API_URL")
 DEFAULT_HEADERS = {
     "User-Agent": str(os.environ.get("USER_AGENT", "Mozilla/5.0")),
     "X-Requested-With": str(os.environ.get("X_REQUESTED_WITH", "XMLHttpRequest")),
-    "Referer": str(os.environ.get("REFERER", "xx))
+    "Referer": str(os.environ.get("REFERER", "xx"))
 }
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", 10))
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", 3))
