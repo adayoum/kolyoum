@@ -91,6 +91,20 @@ def to_float_or_none(value: Any) -> Optional[float]:
     except (ValueError, TypeError, InvalidOperation):
         return None
 
+def safe_convert_timestamp(ts_str: Optional[str]) -> Optional[str]:
+    """Safely converts a string timestamp (potentially with extra digits) to an ISO 8601 string."""
+    if not ts_str or not ts_str.isdigit():
+        return None
+    try:
+        # The timestamp seems to have 13 digits, which means it includes milliseconds.
+        # Standard Unix timestamps have 10 digits. We divide by 1000.
+        ts_float = float(ts_str) / 1000.0
+        dt_object = datetime.datetime.fromtimestamp(ts_float, tz=datetime.timezone.utc)
+        return dt_object.isoformat()
+    except (ValueError, TypeError):
+        logger.warning(f"Could not convert timestamp string: {ts_str}")
+        return None
+
 # --- API Fetching Logic ---
 async def fetch_drug_data_for_query(
     session: aiohttp.ClientSession,
@@ -132,15 +146,11 @@ async def fetch_drug_data_for_query(
 
 # --- Supabase Upload Logic ---
 async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Uploads new or changed drug records to the 'history' table.
-    Returns the list of records that were actually inserted (new or changed).
-    """
     if not supabase:
-        logger.warning("Supabase client not initialized. Skipping upload_to_history_async.")
+        logger.warning("Supabase client not initialized. Skipping upload.")
         return []
     if not drugs:
-        logger.info("upload_to_history_async: No drugs to process.")
+        logger.info("No drugs to process for upload.")
         return []
 
     try:
@@ -148,21 +158,22 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
         count_resp = await asyncio.to_thread(count_query)
         is_history_empty = count_resp.count == 0
 
+        fields_to_check_mapping = {
+            "Commercial Name (English)": "commercial_name_en", "Commercial Name (Arabic)": "commercial_name_ar",
+            "Current Price": "current_price", "Previous Price": "previous_price",
+            "Barcode": "barcode", "Dosage Form": "dosage_form",
+            "last_price_update_date": "last_price_update_date"
+        }
+
         if is_history_empty:
             logger.info("History table is empty. Populating with all found drugs.")
             records_to_insert = []
             for drug in drugs:
                 drug_id = str(drug.get("ID"))
                 if not drug_id: continue
-                record_data = {
-                    "id": drug_id, "data": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    "commercial_name_en": drug.get("Commercial Name (English)"),
-                    "commercial_name_ar": drug.get("Commercial Name (Arabic)"),
-                    "current_price": to_float_or_none(drug.get("Current Price")),
-                    "previous_price": to_float_or_none(drug.get("Previous Price")),
-                    "barcode": drug.get("Barcode"),
-                    "dosage_form": drug.get("Dosage Form"),
-                }
+                record_data = {"id": drug_id, "data": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+                for api_key, db_key in fields_to_check_mapping.items():
+                    record_data[db_key] = drug.get(api_key)
                 records_to_insert.append(record_data)
 
             if not records_to_insert: return []
@@ -177,10 +188,9 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
                     logger.info(f"Initial Population: Uploaded batch {i//BATCH_INSERT_SIZE+1} ({len(batch)} records).")
                 except Exception as e:
                     logger.error(f"Initial Population: Error uploading batch {i//BATCH_INSERT_SIZE+1}: {e}")
-            return [] # No notifications on first run
+            return []
 
-        # --- If history table is NOT empty, proceed with checking for changes ---
-        logger.info(f"[Supabase] Fetching existing records for {len(drugs)} potential drugs for comparison...")
+        logger.info(f"[Supabase] Fetching existing records for {len(drugs)} potential drugs...")
         all_ids_to_check = list({str(d["ID"]) for d in drugs if d.get("ID")})
         if not all_ids_to_check: return []
 
@@ -190,12 +200,6 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
         logger.info(f"[Supabase] Retrieved {len(last_row_by_id)} existing history records.")
 
         records_to_insert_or_update = []
-        fields_to_check_mapping = {
-            "Commercial Name (English)": "commercial_name_en", "Commercial Name (Arabic)": "commercial_name_ar",
-            "Current Price": "current_price", "Previous Price": "previous_price",
-            "Barcode": "barcode", "Dosage Form": "dosage_form",
-        }
-
         for drug in drugs:
             drug_id = str(drug.get("ID"))
             if not drug_id: continue
@@ -209,17 +213,11 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
                     if are_values_different(drug.get(api_key), last_row.get(db_key)):
                         has_changed = True
                         break
-
+            
             if is_new_record or has_changed:
-                record_data = {
-                    "id": drug_id, "data": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    "commercial_name_en": drug.get("Commercial Name (English)"),
-                    "commercial_name_ar": drug.get("Commercial Name (Arabic)"),
-                    "current_price": to_float_or_none(drug.get("Current Price")),
-                    "previous_price": to_float_or_none(drug.get("Previous Price")),
-                    "barcode": drug.get("Barcode"),
-                    "dosage_form": drug.get("Dosage Form"),
-                }
+                record_data = {"id": drug_id, "data": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+                for api_key, db_key in fields_to_check_mapping.items():
+                    record_data[db_key] = drug.get(api_key)
                 records_to_insert_or_update.append(record_data)
 
         if not records_to_insert_or_update:
@@ -245,48 +243,84 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
 
 # --- Telegram Notification Logic ---
 def format_change_message(change_info: Dict[str, Any]) -> str:
+    """Formats a premium, Egyptian-style message for a detected price change."""
     curr_record = change_info['current']
     prev_record = change_info['previous']
+    
     name_ar = curr_record.get('commercial_name_ar') or curr_record.get('commercial_name_en') or "اسم غير متوفر"
+    dosage_form = curr_record.get('dosage_form') or "غير محدد"
+    barcode = curr_record.get('barcode') or "لا يوجد"
+    
     old_price_val = prev_record.get('current_price')
     new_price_val = curr_record.get('current_price')
+    
     old_price_str = f"{old_price_val:g}" if old_price_val is not None else "N/A"
     new_price_str = f"{new_price_val:g}" if new_price_val is not None else "N/A"
-    price_change_type = "🔄 تغير"
+    
+    header = "✨ تحديث سعر جديد ✨"
+    price_line = ""
+    
     try:
         if old_price_val is not None and new_price_val is not None:
-            if float(new_price_val) > float(old_price_val): price_change_type = "⬆️ ارتفع"
-            elif float(new_price_val) < float(old_price_val): price_change_type = "⬇️ انخفض"
-    except (ValueError, TypeError): pass
-    return (f"💊✨ **تحديث سعر دواء** ✨💊\n\n"
-            f"**الاسم:** {name_ar}\n"
-            f"**السعر:** {price_change_type}\n"
-            f"   - **السعر الحالي:** {new_price_str}\n"
-            f"   - **السعر السابق:** {old_price_str}")
+            old_p = Decimal(str(old_price_val))
+            new_p = Decimal(str(new_price_val))
+            
+            if new_p > old_p:
+                change_percentage = ((new_p - old_p) / old_p) * 100 if old_p > 0 else float('inf')
+                price_line = (f"⬆️ **السعر زاد:** من {old_price_str} إلى **{new_price_str}** جنيه\n"
+                              f"   نسبة الزيادة: `+{change_percentage:.2f}%`")
+            elif new_p < old_p:
+                change_percentage = ((old_p - new_p) / old_p) * 100 if old_p > 0 else float('inf')
+                price_line = (f"⬇️ **السعر قل:** من {old_price_str} إلى **{new_price_str}** جنيه\n"
+                              f"   نسبة النقص: `-{change_percentage:.2f}%`")
+            else:
+                price_line = f"🔄 **السعر ثابت:** {new_price_str} جنيه"
+        else:
+            price_line = f"🔄 **السعر اتغير:** من {old_price_str} إلى **{new_price_str}** جنيه"
+            
+    except (ValueError, TypeError, InvalidOperation):
+        price_line = f"🔄 **السعر اتغير:** من {old_price_str} إلى **{new_price_str}** جنيه"
+
+    try:
+        utc_time = datetime.datetime.fromisoformat(curr_record['data'])
+        cairo_tz = datetime.timezone(datetime.timedelta(hours=3)) # UTC+3 for Egypt Standard Time
+        cairo_time = utc_time.astimezone(cairo_tz)
+        timestamp = cairo_time.strftime('%Y-%m-%d الساعة %I:%M %p')
+    except (TypeError, ValueError):
+        timestamp = "غير محدد"
+        
+    return (
+        f"{header}\n\n"
+        f"**صنف:** {name_ar}\n"
+        "-----------------------------------\n"
+        f"{price_line}\n"
+        "-----------------------------------\n"
+        f"🔍 **تفاصيل إضافية:**\n"
+        f"   - الشكل الدوائي: {dosage_form}\n"
+        f"   - الباركود: `{barcode}`\n\n"
+        f"🗓️ **وقت التحديث:** {timestamp}"
+    )
 
 async def send_telegram_message(message: str, client: Optional[TelegramClient]):
     if not client or not client.is_connected():
-        logger.warning("Telegram client not available or not connected, cannot send message.")
+        logger.warning("Telegram client not available, cannot send message.")
         return
     target_channel = os.environ.get("TARGET_CHANNEL")
     if not target_channel:
-        logger.warning("TARGET_CHANNEL not set in environment variables.")
+        logger.warning("TARGET_CHANNEL not set.")
         return
     try:
         entity = int(target_channel) if target_channel.lstrip('-').isdigit() else target_channel
-        await client.send_message(entity, message)
-        logger.info(f"Notification sent successfully to channel {target_channel}.")
+        await client.send_message(entity, message, parse_mode='md')
+        logger.info(f"Notification sent to channel {target_channel}.")
     except FloodWaitError as e:
-        logger.warning(f"Telegram flood wait error: {e}. Will retry later if needed.")
+        logger.warning(f"Telegram flood wait error: {e}. Retrying in {e.seconds}s.")
         await asyncio.sleep(e.seconds)
         await send_telegram_message(message, client)
     except Exception as e:
-        logger.error(f"Failed to send Telegram message to {target_channel}: {e}")
+        logger.error(f"Failed to send Telegram message: {e}")
 
 async def compare_and_notify_changes(changed_records: List[Dict[str, Any]], telegram_client: Optional[TelegramClient]):
-    """
-    Compares records that were just inserted against their previous state and sends notifications.
-    """
     if not changed_records:
         logger.info("No changed records to notify about.")
         return
@@ -294,20 +328,17 @@ async def compare_and_notify_changes(changed_records: List[Dict[str, Any]], tele
         logger.warning("Telegram client not ready. Skipping notification check.")
         return
 
-    logger.info(f"Checking {len(changed_records)} changed records for price updates to notify...")
+    logger.info(f"Checking {len(changed_records)} changed records for price updates...")
     
-    # Get the IDs of the records that have changed
     changed_ids = [record['id'] for record in changed_records]
-    if not changed_ids:
-        return
+    if not changed_ids: return
 
     try:
-        # Fetch the latest two history entries for ONLY the IDs that have changed
         rpc_query = supabase.rpc("get_latest_two_drug_history", {"p_ids": changed_ids}).execute
         rpc_response = await asyncio.to_thread(rpc_query)
 
         if not hasattr(rpc_response, 'data') or not rpc_response.data:
-            logger.info("Could not fetch history for changed records.")
+            logger.warning("Could not fetch history for changed records to notify.")
             return
 
         drug_history_grouped = defaultdict(list)
@@ -316,32 +347,33 @@ async def compare_and_notify_changes(changed_records: List[Dict[str, Any]], tele
 
         notifications_sent = 0
         for drug_id, records in drug_history_grouped.items():
-            if len(records) < 2:
-                # This drug was new, no previous record to compare price
-                continue
+            if len(records) < 2: continue
 
             records.sort(key=lambda x: x['data'])
             prev_record, curr_record = records[-2], records[-1]
 
             if are_values_different(prev_record.get("current_price"), curr_record.get("current_price")):
-                logger.info(f"FRESH price change detected for Drug ID {drug_id}. Prev: {prev_record.get('current_price')} -> Curr: {curr_record.get('current_price')}")
+                logger.info(f"FRESH price change for ID {drug_id}: {prev_record.get('current_price')} -> {curr_record.get('current_price')}")
                 message = format_change_message({'previous': prev_record, 'current': curr_record})
                 await send_telegram_message(message, telegram_client)
                 notifications_sent += 1
-                await asyncio.sleep(1) # Small delay to avoid Telegram rate limits
+                await asyncio.sleep(1)
 
-        logger.info(f"Finished checking for notifications. {notifications_sent} notifications sent.")
-
+        logger.info(f"Finished notification check. Sent {notifications_sent} notifications.")
     except Exception as e:
-        logger.exception(f"An error occurred during notification checks: {e}")
+        logger.exception(f"Error during notification checks: {e}")
 
 # --- Main Execution ---
 def map_api_record_to_internal(api_record: dict) -> Dict[str, Any]:
     return {
-        "ID": api_record.get("id"), "Commercial Name (English)": api_record.get("name"),
-        "Commercial Name (Arabic)": api_record.get("arabic"), "Current Price": api_record.get("price"),
-        "Previous Price": api_record.get("oldprice"), "Barcode": api_record.get("barcode"),
+        "ID": api_record.get("id"),
+        "Commercial Name (English)": api_record.get("name"),
+        "Commercial Name (Arabic)": api_record.get("arabic"),
+        "Current Price": to_float_or_none(api_record.get("price")),
+        "Previous Price": to_float_or_none(api_record.get("oldprice")),
+        "Barcode": api_record.get("barcode"),
         "Dosage Form": api_record.get("dosage_form"),
+        "last_price_update_date": safe_convert_timestamp(api_record.get("Date_updated"))
     }
 
 async def main():
@@ -350,9 +382,7 @@ async def main():
 
     telegram_client_instance: Optional[TelegramClient] = None
     try:
-        api_id_str = os.environ.get("API_ID")
-        api_hash = os.environ.get("API_HASH")
-        bot_token = os.environ.get("BOT_TOKEN")
+        api_id_str, api_hash, bot_token = os.environ.get("API_ID"), os.environ.get("API_HASH"), os.environ.get("BOT_TOKEN")
         if all([api_id_str, api_hash, bot_token]):
             api_id = int(api_id_str)
             telegram_client_instance = TelegramClient('bot_session', api_id, api_hash)
@@ -382,7 +412,7 @@ async def main():
             for _, drugs_from_batch in results:
                 if drugs_from_batch: all_raw_drugs.extend(drugs_from_batch)
 
-        logger.info(f"Finished fetching data from API. Found {len(all_raw_drugs)} raw drug records.")
+        logger.info(f"Finished fetching data from API. Found {len(all_raw_drugs)} raw records.")
         if all_raw_drugs:
             logger.info(f"Sample raw drug record: {all_raw_drugs[0]}")
             mapped_drugs = [map_api_record_to_internal(d) for d in all_raw_drugs if d and isinstance(d, dict) and d.get("id")]
