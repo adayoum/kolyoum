@@ -82,13 +82,14 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
                     async with session.post(API_URL, data=payload, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT_SECONDS) as response:
                         response.raise_for_status()
                         data = await response.json(content_type=None)
-                        logger.info(f"API response for '{search_query}': {data}")
+                        count = len(data.get('data', [])) if isinstance(data.get('data', []), list) else 0
+                        logger.info(f"API '{search_query}': {count} results returned.")
                         return search_query, data.get('data', [])
                 except (aiohttp.ClientError, asyncio.TimeoutError):
                     if attempt >= MAX_RETRIES - 1: raise
                     await asyncio.sleep(RETRY_DELAY_SECONDS)
     except Exception as e:
-        logger.error(f"Query '{search_query}': Failed after all retries - {type(e).__name__}")
+        logger.error(f"API '{search_query}': Failed after all retries - {type(e).__name__}")
         return search_query, []
 
 async def upload_to_history_async(drugs: list):
@@ -103,6 +104,7 @@ async def upload_to_history_async(drugs: list):
         return
 
     try:
+        logger.info("Connecting to Supabase and fetching last records...")
         resp = await asyncio.to_thread(supabase.rpc("get_latest_record_for_ids", {"p_ids": all_ids}).execute)
         last_row_by_id = {row['id']: row for row in resp.data} if resp.data else {}
         logger.info(f"upload_to_history_async: Retrieved {len(last_row_by_id)} last rows from DB.")
@@ -129,12 +131,12 @@ async def upload_to_history_async(drugs: list):
         logger.info("History Upload: No data changes detected. Nothing to upload.")
         return
 
-    logger.info(f"History Upload: Found {len(records_to_insert)} new or changed records to upload.")
+    logger.info(f"History Upload: Found {len(records_to_insert)} new or changed records to upload. Attempting to insert...")
     for i in range(0, len(records_to_insert), 500):
         batch = records_to_insert[i:i+500]
         try:
             await asyncio.to_thread(supabase.table("history").insert(batch).execute)
-            logger.info(f"History Upload: Uploaded batch {i//500+1} ({len(batch)} records)")
+            logger.info(f"History Upload: Uploaded batch {i//500+1} ({len(batch)} records) to Supabase.")
         except Exception as e:
             logger.error(f"History Upload: Error uploading batch {i//500+1}: {e}")
 
