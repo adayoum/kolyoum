@@ -155,8 +155,8 @@ async def fetch_drug_data_for_query(
 async def upload_to_history_async(drugs: List[Dict[str, Any]]):
     """
     Uploads new or changed drug records to the 'history' table in Supabase.
-    Fetches existing records and only inserts/updates if there's a change
-    or if the record is new.
+    If the 'history' table is empty, it populates it with all found drugs.
+    Otherwise, it checks for changes and inserts only modified records.
     """
     if not supabase:
         logger.warning("Supabase client not initialized. Skipping upload_to_history_async.")
@@ -170,96 +170,136 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]):
         logger.info("upload_to_history_async: No valid IDs found in drugs.")
         return
 
+    # --- Check if history table is empty ---
     try:
+        # Fetch a count of existing records to determine if the table is empty
+        count_resp = await asyncio.to_thread(
+            supabase.table("history").select("id").limit(1).execute() # Limit to 1 to check for existence efficiently
+        )
+        is_history_empty = not count_resp.data # If data is empty list, table is empty
+        
+        if is_history_empty:
+            logger.info("History table is empty. Populating with all found drugs.")
+            records_to_insert = [] # Rename for clarity in this block
+            for drug in drugs:
+                drug_id = str(drug.get("ID"))
+                if not drug_id:
+                    logger.warning("Skipping drug with no ID during initial population.")
+                    continue
+                
+                record_data = {
+                    "id": drug_id,
+                    "data": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }
+                # Populate all relevant fields for the initial insert
+                fields_to_check_mapping = {
+                    "ID": "id", # Primary key
+                    "Commercial Name (English)": "commercial_name_en",
+                    "Commercial Name (Arabic)": "commercial_name_ar",
+                    "Current Price": "current_price",
+                    "Previous Price": "previous_price",
+                    "Barcode": "barcode",
+                    "Dosage Form": "dosage_form",
+                }
+                for api_key, db_key in fields_to_check_mapping.items():
+                    if db_key == "id": continue
+                    value = drug.get(api_key)
+                    if db_key in ["current_price", "previous_price"]:
+                        record_data[db_key] = to_float_or_none(value)
+                    else:
+                        record_data[db_key] = value if value is not None else None
+                records_to_insert.append(record_data)
+
+            if not records_to_insert:
+                logger.info("No valid records to insert during initial population.")
+                return
+
+            logger.info(f"Initial population: Preparing to insert {len(records_to_insert)} records.")
+            # Batch insert for initial population
+            BATCH_INSERT_SIZE = 500
+            for i in range(0, len(records_to_insert), BATCH_INSERT_SIZE):
+                batch = records_to_insert[i:i+BATCH_INSERT_SIZE]
+                try:
+                    # Use insert here as it's the initial population
+                    await asyncio.to_thread(supabase.table("history").insert(batch).execute)
+                    logger.info(f"Initial Population: Uploaded batch {i//BATCH_INSERT_SIZE+1} ({len(batch)} records) to Supabase.")
+                except Exception as e:
+                    logger.error(f"Initial Population: Error uploading batch {i//BATCH_INSERT_SIZE+1}: {e}")
+            return # Exit after initial population
+        
+        # --- If history table is NOT empty, proceed with checking for changes ---
         logger.info(f"[Supabase] Fetching {len(all_ids)} latest history records for comparison...")
-        # Use asyncio.to_thread for blocking Supabase calls
-        # Batching the RPC call for IDs if there are too many (Supabase has limits)
-        # For simplicity here, we assume all_ids fit in one call.
         resp = await asyncio.to_thread(
             supabase.rpc("get_latest_record_for_ids", {"p_ids": all_ids}).execute
         )
         last_row_by_id = {row['id']: row for row in resp.data} if resp.data else {}
         logger.info(f"[Supabase] Retrieved {len(last_row_by_id)} existing history records.")
-    except Exception as e:
-        logger.error(f"History Upload: Could not fetch last rows from Supabase. Error: {e}")
-        return
 
-    records_to_insert_or_update = []
-    # Define fields to compare for changes. Adjust as needed.
-    fields_to_check_mapping = {
-        "ID": "id", # Primary key
-        "Commercial Name (English)": "commercial_name_en",
-        "Commercial Name (Arabic)": "commercial_name_ar",
-        "Current Price": "current_price",
-        "Previous Price": "previous_price",
-        "Barcode": "barcode",
-        "Dosage Form": "dosage_form",
-    }
+        records_to_insert_or_update = []
+        fields_to_check_mapping = {
+            "ID": "id",
+            "Commercial Name (English)": "commercial_name_en",
+            "Commercial Name (Arabic)": "commercial_name_ar",
+            "Current Price": "current_price",
+            "Previous Price": "previous_price",
+            "Barcode": "barcode",
+            "Dosage Form": "dosage_form",
+        }
 
-    for drug in drugs:
-        drug_id = str(drug.get("ID"))
-        if not drug_id:
-            logger.warning("Skipping drug with no ID.")
-            continue
+        for drug in drugs:
+            drug_id = str(drug.get("ID"))
+            if not drug_id:
+                logger.warning("Skipping drug with no ID.")
+                continue
 
-        last_row = last_row_by_id.get(drug_id)
-        is_new_record = not last_row
-
-        # Check if the record has changed compared to the last entry in history
-        has_changed = False
-        if not is_new_record:
-            for api_key, db_key in fields_to_check_mapping.items():
-                if db_key == "id": continue # Skip comparing the ID itself
-                if are_values_different(drug.get(api_key), last_row.get(db_key)):
-                    has_changed = True
-                    break # Found a difference, no need to check further
-
-        if is_new_record or has_changed:
-            record_data = {
-                "id": drug_id,
-                "data": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            }
-            for api_key, db_key in fields_to_check_mapping.items():
-                if db_key == "id": continue
-                value = drug.get(api_key)
-                # Apply specific transformations if necessary for certain fields
-                if db_key in ["current_price", "previous_price"]:
-                    record_data[db_key] = to_float_or_none(value)
-                else:
-                    record_data[db_key] = value if value is not None else None # Ensure None for missing values
-
-            records_to_insert_or_update.append(record_data)
-
-    if not records_to_insert_or_update:
-        logger.info("History Upload: No new or changed records detected. Nothing to upload.")
-        return
-
-    logger.info(f"History Upload: Found {len(records_to_insert_or_update)} new or changed records to upload.")
-    
-    # Supabase insert operations are best done in batches. The max limit for a single insert
-    # is often around 500-1000 rows. Let's use a batch size of 500.
-    BATCH_INSERT_SIZE = 500
-    for i in range(0, len(records_to_insert_or_update), BATCH_INSERT_SIZE):
-        batch = records_to_insert_or_update[i:i+BATCH_INSERT_SIZE]
-        try:
-            # Using .upsert is more efficient if you want to update existing records
-            # based on 'id' and insert new ones. If you always want new history entries,
-            # then .insert is fine. For history, creating new entries is usually desired.
-            # If your table has a 'created_at' or similar, you might not need 'data'.
-            # For this example, we assume 'data' is a custom timestamp for the record.
+            last_row = last_row_by_id.get(drug_id)
             
-            # If your history table has a unique constraint on (id, data) or just 'id',
-            # you might need to handle potential conflicts if running the script multiple times
-            # for the same data that hasn't changed since last run.
-            # However, the logic above only prepares records that are new or changed,
-            # so simple 'insert' should work.
+            # If a record with this ID doesn't exist in history, it means it's a new drug
+            # that wasn't in the table before. We should insert it.
+            is_new_record = not last_row
 
-            await asyncio.to_thread(supabase.table("history").insert(batch).execute)
-            logger.info(f"History Upload: Uploaded batch {i//BATCH_INSERT_SIZE+1} ({len(batch)} records) to Supabase.")
-        except Exception as e:
-            logger.error(f"History Upload: Error uploading batch {i//BATCH_INSERT_SIZE+1}: {e}")
-            # You might want to implement more sophisticated error handling here,
-            # like writing failed batches to a file for later reprocessing.
+            has_changed = False
+            if not is_new_record: # Only check for changes if the record already exists
+                for api_key, db_key in fields_to_check_mapping.items():
+                    if db_key == "id": continue
+                    if are_values_different(drug.get(api_key), last_row.get(db_key)):
+                        has_changed = True
+                        break
+
+            # Add to the list if it's a brand new drug OR if an existing drug has changed
+            if is_new_record or has_changed:
+                record_data = {
+                    "id": drug_id,
+                    "data": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }
+                for api_key, db_key in fields_to_check_mapping.items():
+                    if db_key == "id": continue
+                    value = drug.get(api_key)
+                    if db_key in ["current_price", "previous_price"]:
+                        record_data[db_key] = to_float_or_none(value)
+                    else:
+                        record_data[db_key] = value if value is not None else None
+                records_to_insert_or_update.append(record_data)
+
+        if not records_to_insert_or_update:
+            logger.info("History Upload: No new or changed records detected. Nothing to upload.")
+            return
+
+        logger.info(f"History Upload: Found {len(records_to_insert_or_update)} new or changed records to upload.")
+        
+        BATCH_INSERT_SIZE = 500
+        for i in range(0, len(records_to_insert_or_update), BATCH_INSERT_SIZE):
+            batch = records_to_insert_or_update[i:i+BATCH_INSERT_SIZE]
+            try:
+                # Use insert here, as we've already filtered for new/changed records.
+                # If a record truly has no changes, it won't be in this batch.
+                await asyncio.to_thread(supabase.table("history").insert(batch).execute)
+                logger.info(f"History Upload: Uploaded batch {i//BATCH_INSERT_SIZE+1} ({len(batch)} records) to Supabase.")
+            except Exception as e:
+                logger.error(f"History Upload: Error uploading batch {i//BATCH_INSERT_SIZE+1}: {e}")
+
+    except Exception as e:
+        logger.exception(f"An error occurred during Supabase upload logic: {e}")
 
 # --- Telegram Notification Logic ---
 def format_change_message(change_info: Dict[str, Any]) -> str:
@@ -427,9 +467,6 @@ async def main():
                 logger.info("Telegram client started and authorized successfully.")
             else:
                 logger.error("Telegram client failed to authorize. Check credentials or session.")
-                # If session is not authorized, it might need re-authentication or session file reset.
-                # For a bot, 'start(bot_token=bot_token)' should handle it.
-                # If it fails here, it might be a fundamental issue with the token or telethon setup.
                 await telegram_client_instance.disconnect()
                 telegram_client_instance = None
 
