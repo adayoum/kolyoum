@@ -165,22 +165,18 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]):
         logger.info("upload_to_history_async: No drugs to process.")
         return
 
-    all_ids = [str(d["ID"]) for d in drugs if d.get("ID")]
-    if not all_ids:
-        logger.info("upload_to_history_async: No valid IDs found in drugs.")
-        return
-
     # --- Check if history table is empty ---
     try:
         # Fetch a count of existing records to determine if the table is empty
         count_resp = await asyncio.to_thread(
             supabase.table("history").select("id").limit(1).execute() # Limit to 1 to check for existence efficiently
         )
-        is_history_empty = not count_resp.data # If data is empty list, table is empty
+        # If count_resp.data is an empty list, it means the table is empty.
+        is_history_empty = not count_resp.data 
         
         if is_history_empty:
             logger.info("History table is empty. Populating with all found drugs.")
-            records_to_insert = [] # Rename for clarity in this block
+            records_to_insert = [] # Prepare records for initial insertion
             for drug in drugs:
                 drug_id = str(drug.get("ID"))
                 if not drug_id:
@@ -228,12 +224,18 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]):
             return # Exit after initial population
         
         # --- If history table is NOT empty, proceed with checking for changes ---
-        logger.info(f"[Supabase] Fetching {len(all_ids)} latest history records for comparison...")
+        logger.info(f"[Supabase] Fetching existing records for {len(drugs)} potential drugs for comparison...")
+        # Get all unique IDs from the drugs list to query Supabase efficiently
+        all_ids_to_check = list({str(d["ID"]) for d in drugs if d.get("ID")})
+        if not all_ids_to_check:
+            logger.info("No valid IDs to check against Supabase history.")
+            return
+
         resp = await asyncio.to_thread(
-            supabase.rpc("get_latest_record_for_ids", {"p_ids": all_ids}).execute
+            supabase.rpc("get_latest_record_for_ids", {"p_ids": all_ids_to_check}).execute
         )
         last_row_by_id = {row['id']: row for row in resp.data} if resp.data else {}
-        logger.info(f"[Supabase] Retrieved {len(last_row_by_id)} existing history records.")
+        logger.info(f"[Supabase] Retrieved {len(last_row_by_id)} existing history records for comparison.")
 
         records_to_insert_or_update = []
         fields_to_check_mapping = {
@@ -246,6 +248,7 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]):
             "Dosage Form": "dosage_form",
         }
 
+        # This part handles the case where the table is NOT empty
         for drug in drugs:
             drug_id = str(drug.get("ID"))
             if not drug_id:
