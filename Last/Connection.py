@@ -81,7 +81,9 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
                 try:
                     async with session.post(API_URL, data=payload, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT_SECONDS) as response:
                         response.raise_for_status()
-                        return search_query, (await response.json(content_type=None)).get('data', [])
+                        data = await response.json(content_type=None)
+                        logger.info(f"API response for '{search_query}': {data}")
+                        return search_query, data.get('data', [])
                 except (aiohttp.ClientError, asyncio.TimeoutError):
                     if attempt >= MAX_RETRIES - 1: raise
                     await asyncio.sleep(RETRY_DELAY_SECONDS)
@@ -91,14 +93,19 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
 
 async def upload_to_history_async(drugs: list):
     """Uploads new or changed drug records to the database."""
-    if not drugs: return
+    if not drugs:
+        logger.info("upload_to_history_async: No drugs to process.")
+        return
     now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
     all_ids = [str(d["ID"]) for d in drugs if d.get("ID")]
-    if not all_ids: return
+    if not all_ids:
+        logger.info("upload_to_history_async: No valid IDs found in drugs.")
+        return
 
     try:
         resp = await asyncio.to_thread(supabase.rpc("get_latest_record_for_ids", {"p_ids": all_ids}).execute)
         last_row_by_id = {row['id']: row for row in resp.data} if resp.data else {}
+        logger.info(f"upload_to_history_async: Retrieved {len(last_row_by_id)} last rows from DB.")
     except Exception as e:
         logger.error(f"History Upload: Could not fetch last rows. Error: {e}")
         return
@@ -178,6 +185,7 @@ async def compare_history_and_notify(script_start_time: datetime.datetime):
         if not all_ids: return
 
         rpc_response = await asyncio.to_thread(supabase.rpc("get_latest_two_drug_history", {"p_ids": all_ids}).execute)
+        logger.info(f"Fetched {len(rpc_response.data) if hasattr(rpc_response, 'data') and rpc_response.data else 0} records from get_latest_two_drug_history RPC.")
         if not hasattr(rpc_response, 'data') or not rpc_response.data: return
 
         drug_history_grouped = defaultdict(list)
@@ -189,7 +197,6 @@ async def compare_history_and_notify(script_start_time: datetime.datetime):
             prev_record, curr_record = records[-2], records[-1]
             
             if are_values_different(prev_record.get("current_price"), curr_record.get("current_price")):
-                # *** FIX: The "Freshness Check" to prevent duplicate notifications ***
                 curr_record_timestamp = datetime.datetime.fromisoformat(curr_record['data'])
                 if curr_record_timestamp >= script_start_time:
                     logger.info(f"FRESH price change detected for ID {drug_id}: {prev_record.get('current_price')} -> {curr_record.get('current_price')}")
@@ -204,7 +211,6 @@ async def compare_history_and_notify(script_start_time: datetime.datetime):
 async def main():
     """Main entry point."""
     global telegram_client_instance
-    # *** FIX: Record the script's start time for the "freshness check" ***
     script_start_time = datetime.datetime.now(datetime.timezone.utc)
     logger.info(f"Script starting at {script_start_time.isoformat()}")
 
@@ -231,13 +237,15 @@ async def main():
                 results = await asyncio.gather(*tasks)
                 for _, drugs in results:
                     if drugs: all_drugs.extend(drugs)
+            logger.info(f"Sample drug record: {all_drugs[0] if all_drugs else 'No data'}")
         
         if all_drugs:
             unique_drugs = list({d['ID']: d for d in all_drugs if d.get('ID')}.values())
             logger.info(f"Found {len(all_drugs)} raw records, resulting in {len(unique_drugs)} unique drugs.")
             await upload_to_history_async(unique_drugs)
+        else:
+            logger.info("No drugs found from API.")
 
-        # *** FIX: Pass the start time to the notification function ***
         await compare_history_and_notify(script_start_time)
     except Exception as e:
         logger.exception(f"An unhandled error occurred in main loop: {e}")
