@@ -7,11 +7,12 @@ import aiohttp
 import logging
 import sys
 import string
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import os
 from supabase import create_client, Client
 from collections import defaultdict
 from telethon import TelegramClient
+from telethon.errors import FloodWaitError, SessionPasswordNeededError, AuthKeyError
 from decimal import Decimal, InvalidOperation
 
 # Load environment variables from .env file
@@ -19,38 +20,39 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Configuration ---
-API_URL = os.environ.get("API_URL")
-DEFAULT_HEADERS = {
+API_URL: Optional[str] = os.environ.get("API_URL")
+DEFAULT_HEADERS: Dict[str, str] = {
     "User-Agent": str(os.environ.get("USER_AGENT", "Mozilla/5.0")),
     "X-Requested-With": str(os.environ.get("X_REQUESTED_WITH", "XMLHttpRequest")),
-    "Referer": str(os.environ.get("REFERER", "xx"))
+    "Referer": str(os.environ.get("REFERER", "xx")) # Consider a more realistic or variable referer
 }
-REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", 10))
-MAX_RETRIES = int(os.environ.get("MAX_RETRIES", 3))
-RETRY_DELAY_SECONDS = int(os.environ.get("RETRY_DELAY_SECONDS", 2))
-MAX_CONCURRENT_REQUESTS = int(os.environ.get("MAX_CONCURRENT_REQUESTS", 5))  # قللناها إلى 5 فقط
-BATCH_SIZE = 10  # دفعة صغيرة فقط
+REQUEST_TIMEOUT_SECONDS: int = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", 15)) # Slightly increased timeout
+MAX_RETRIES: int = int(os.environ.get("MAX_RETRIES", 5)) # Increased retries
+RETRY_DELAY_SECONDS: int = int(os.environ.get("RETRY_DELAY_SECONDS", 2))
+MAX_CONCURRENT_REQUESTS: int = int(os.environ.get("MAX_CONCURRENT_REQUESTS", 5))
+BATCH_SIZE: int = 26 * 26 # You have 26*26 queries, so make batch size match if possible, or process all at once if not too many
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+SUPABASE_URL: Optional[str] = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY: Optional[str] = os.environ.get("SUPABASE_KEY")
 
 # --- Logging Setup ---
-logger = logging.getLogger()
+logger = logging.getLogger(__name__) # Use __name__ for logger name
 logger.setLevel(logging.INFO)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-if logger.hasHandlers():
-    logger.handlers.clear()
 
-fh = logging.FileHandler("drug_scraper_final.log", encoding='utf-8')
-fh.setFormatter(formatter)
-logger.addHandler(fh)
+# Prevent duplicate handlers if script is reloaded
+if not logger.handlers:
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 
-ch = logging.StreamHandler(sys.stdout)
-ch.setFormatter(formatter)
-logger.addHandler(ch)
+    fh = logging.FileHandler("drug_scraper_final.log", encoding='utf-8')
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
 
 # --- Supabase Key Check ---
-def log_supabase_key_type(key: str):
+def log_supabase_key_type(key: Optional[str]):
     if not key:
         logger.warning("SUPABASE_KEY is empty! Check your .env file.")
         return
@@ -64,183 +66,332 @@ def log_supabase_key_type(key: str):
 
 log_supabase_key_type(SUPABASE_KEY)
 
-# Initialize clients
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# --- Supabase Key Check ---
-def is_service_role_key(key: str) -> bool:
-    # Supabase service_role keys are long and not the same as anon keys
-    return key and ("service_role" in key or len(key) > 60)
-
-if not is_service_role_key(SUPABASE_KEY):
-    logger.warning("[SECURITY] The SUPABASE_KEY in use does NOT appear to be a service_role key! You MUST use the service_role key for privileged inserts. Current key starts with: %s...", SUPABASE_KEY[:8])
+# Initialize Supabase client
+# It's better to initialize this after checking SUPABASE_URL and SUPABASE_KEY
+supabase: Optional[Client] = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logger.info("Supabase client initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize Supabase client: {e}")
 else:
-    logger.info("Supabase is using a service_role key (starts with: %s...)", SUPABASE_KEY[:12])
+    logger.error("SUPABASE_URL or SUPABASE_KEY not found. Supabase functionality will be disabled.")
 
 # --- Helper Functions ---
 def are_values_different(val1: Any, val2: Any) -> bool:
-    """Intelligently compares two values."""
+    """Intelligently compares two values, handling potential None or empty strings."""
     v1_is_empty = val1 is None or (isinstance(val1, str) and val1.strip() == "")
     v2_is_empty = val2 is None or (isinstance(val2, str) and val2.strip() == "")
-    if v1_is_empty and v2_is_empty: return False
+    if v1_is_empty and v2_is_empty:
+        return False # Both are considered empty, so no difference.
+    if v1_is_empty or v2_is_empty:
+        return True # One is empty, the other is not.
+
     try:
+        # Use Decimal for accurate price comparisons
         return Decimal(str(val1)) != Decimal(str(val2))
     except (InvalidOperation, TypeError, ValueError):
+        # Fallback to string comparison if Decimal conversion fails
         return str(val1).strip() != str(val2).strip()
 
 def to_float_or_none(value: Any) -> Optional[float]:
     """Safely converts a value to a float or returns None."""
-    if value is None or str(value).strip() == '': return None
+    if value is None or (isinstance(value, str) and value.strip() == ''):
+        return None
     try:
-        return float(value)
-    except (ValueError, TypeError):
+        # Attempt to parse as Decimal first for better precision before converting to float
+        return float(Decimal(str(value)))
+    except (ValueError, TypeError, InvalidOperation):
         return None
 
-# --- Main Logic ---
-# --- Enhanced Exponential Backoff for API fetch ---
-async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query: str):
-    """Fetches drug data for a single query with exponential backoff."""
+# --- API Fetching Logic ---
+async def fetch_drug_data_for_query(
+    session: aiohttp.ClientSession,
+    search_query: str,
+    semaphore: asyncio.Semaphore
+) -> Tuple[str, List[Dict[str, Any]]]:
+    """
+    Fetches drug data for a single query with exponential backoff and semaphore.
+    Returns the search query and the list of drug data.
+    """
     payload = {"search": "1", "searchq": search_query, "order_by": "name ASC", "page": "1"}
     for attempt in range(MAX_RETRIES):
         try:
-            async with asyncio.Semaphore(MAX_CONCURRENT_REQUESTS):
+            async with semaphore: # Acquire semaphore before making the request
                 async with session.post(API_URL, data=payload, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-                    response.raise_for_status()
-                    data = await response.json(content_type=None)
-                    count = len(data.get('data', [])) if isinstance(data.get('data', []), list) else 0
+                    response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+                    # Try to parse as JSON, but handle cases where content_type might be unexpected
+                    try:
+                        data = await response.json(content_type=None)
+                    except aiohttp.ContentTypeError:
+                        logger.warning(f"API '{search_query}': Unexpected content type. Response text: {await response.text()[:200]}...") # Log snippet of response
+                        return search_query, [] # Skip this query if content type is wrong
+
+                    drug_list = data.get('data', [])
+                    if not isinstance(drug_list, list):
+                        logger.warning(f"API '{search_query}': 'data' field is not a list. Found: {type(drug_list)}. Response: {str(data)[:200]}...")
+                        return search_query, []
+
+                    count = len(drug_list)
                     logger.info(f"API '{search_query}': {count} results returned.")
-                    return search_query, data.get('data', [])
+                    return search_query, drug_list
         except (aiohttp.ClientError, asyncio.TimeoutError, aiohttp.ServerDisconnectedError) as e:
             wait_time = RETRY_DELAY_SECONDS * (2 ** attempt)
-            logger.warning(f"API '{search_query}': {type(e).__name__} on attempt {attempt+1}/{MAX_RETRIES}. Retrying in {wait_time}s...")
+            logger.warning(f"API '{search_query}': Request failed ({type(e).__name__}) on attempt {attempt+1}/{MAX_RETRIES}. Retrying in {wait_time}s...")
             await asyncio.sleep(wait_time)
         except Exception as e:
-            logger.error(f"API '{search_query}': Failed after all retries - {type(e).__name__}: {e}")
-            return search_query, []
-    logger.error(f"API '{search_query}': All retries failed.")
+            logger.error(f"API '{search_query}': Unexpected error on attempt {attempt+1}/{MAX_RETRIES} - {type(e).__name__}: {e}")
+            # If it's an unknown error, we might want to stop retrying or log more details.
+            # For now, we'll continue with retries as it might be transient.
+            if attempt == MAX_RETRIES - 1:
+                logger.error(f"API '{search_query}': All retries failed after unexpected error: {e}")
+                return search_query, []
+            await asyncio.sleep(RETRY_DELAY_SECONDS) # Short delay before next retry for unexpected errors
+    logger.error(f"API '{search_query}': All {MAX_RETRIES} retries failed.")
     return search_query, []
 
-async def upload_to_history_async(drugs: list):
-    """Uploads new or changed drug records to the database."""
-    logger.info(f"[Supabase] Using key: {'anon' if 'anon' in SUPABASE_KEY else 'service_role or custom'} (length: {len(SUPABASE_KEY)})")
+# --- Supabase Upload Logic ---
+async def upload_to_history_async(drugs: List[Dict[str, Any]]):
+    """
+    Uploads new or changed drug records to the 'history' table in Supabase.
+    Fetches existing records and only inserts/updates if there's a change
+    or if the record is new.
+    """
+    if not supabase:
+        logger.warning("Supabase client not initialized. Skipping upload_to_history_async.")
+        return
     if not drugs:
         logger.info("upload_to_history_async: No drugs to process.")
         return
-    now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
     all_ids = [str(d["ID"]) for d in drugs if d.get("ID")]
     if not all_ids:
         logger.info("upload_to_history_async: No valid IDs found in drugs.")
         return
 
     try:
-        logger.info("Connecting to Supabase and fetching last records...")
-        resp = await asyncio.to_thread(supabase.rpc("get_latest_record_for_ids", {"p_ids": all_ids}).execute)
+        logger.info(f"[Supabase] Fetching {len(all_ids)} latest history records for comparison...")
+        # Use asyncio.to_thread for blocking Supabase calls
+        # Batching the RPC call for IDs if there are too many (Supabase has limits)
+        # For simplicity here, we assume all_ids fit in one call.
+        resp = await asyncio.to_thread(
+            supabase.rpc("get_latest_record_for_ids", {"p_ids": all_ids}).execute
+        )
         last_row_by_id = {row['id']: row for row in resp.data} if resp.data else {}
-        logger.info(f"upload_to_history_async: Retrieved {len(last_row_by_id)} last rows from DB.")
+        logger.info(f"[Supabase] Retrieved {len(last_row_by_id)} existing history records.")
     except Exception as e:
-        logger.error(f"History Upload: Could not fetch last rows. Error: {e}")
+        logger.error(f"History Upload: Could not fetch last rows from Supabase. Error: {e}")
         return
 
-    records_to_insert = []
-    fields_to_check = {"Commercial Name (English)": "commercial_name_en", "Commercial Name (Arabic)": "commercial_name_ar", "Current Price": "current_price", "Previous Price": "previous_price", "Barcode": "barcode", "Dosage Form": "dosage_form"}
-    
-    for d in drugs:
-        drug_id = str(d.get("ID"))
-        if not drug_id: continue
+    records_to_insert_or_update = []
+    # Define fields to compare for changes. Adjust as needed.
+    fields_to_check_mapping = {
+        "ID": "id", # Primary key
+        "Commercial Name (English)": "commercial_name_en",
+        "Commercial Name (Arabic)": "commercial_name_ar",
+        "Current Price": "current_price",
+        "Previous Price": "previous_price",
+        "Barcode": "barcode",
+        "Dosage Form": "dosage_form",
+    }
+
+    for drug in drugs:
+        drug_id = str(drug.get("ID"))
+        if not drug_id:
+            logger.warning("Skipping drug with no ID.")
+            continue
+
         last_row = last_row_by_id.get(drug_id)
-        if not last_row or any(are_values_different(d.get(py_key), last_row.get(db_key)) for py_key, db_key in fields_to_check.items()):
-            records_to_insert.append({
-                "id": drug_id, "data": now_str,
-                "commercial_name_en": d.get("Commercial Name (English)"), "commercial_name_ar": d.get("Commercial Name (Arabic)"),
-                "current_price": to_float_or_none(d.get("Current Price")), "previous_price": to_float_or_none(d.get("Previous Price")),
-                "barcode": d.get("Barcode"), "dosage_form": d.get("Dosage Form"),
-            })
+        is_new_record = not last_row
 
-    if not records_to_insert:
-        logger.info("History Upload: No data changes detected. Nothing to upload.")
+        # Check if the record has changed compared to the last entry in history
+        has_changed = False
+        if not is_new_record:
+            for api_key, db_key in fields_to_check_mapping.items():
+                if db_key == "id": continue # Skip comparing the ID itself
+                if are_values_different(drug.get(api_key), last_row.get(db_key)):
+                    has_changed = True
+                    break # Found a difference, no need to check further
+
+        if is_new_record or has_changed:
+            record_data = {
+                "id": drug_id,
+                "data": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+            for api_key, db_key in fields_to_check_mapping.items():
+                if db_key == "id": continue
+                value = drug.get(api_key)
+                # Apply specific transformations if necessary for certain fields
+                if db_key in ["current_price", "previous_price"]:
+                    record_data[db_key] = to_float_or_none(value)
+                else:
+                    record_data[db_key] = value if value is not None else None # Ensure None for missing values
+
+            records_to_insert_or_update.append(record_data)
+
+    if not records_to_insert_or_update:
+        logger.info("History Upload: No new or changed records detected. Nothing to upload.")
         return
 
-    logger.info(f"History Upload: Found {len(records_to_insert)} new or changed records to upload. Attempting to insert...")
-    for i in range(0, len(records_to_insert), 500):
-        batch = records_to_insert[i:i+500]
+    logger.info(f"History Upload: Found {len(records_to_insert_or_update)} new or changed records to upload.")
+    
+    # Supabase insert operations are best done in batches. The max limit for a single insert
+    # is often around 500-1000 rows. Let's use a batch size of 500.
+    BATCH_INSERT_SIZE = 500
+    for i in range(0, len(records_to_insert_or_update), BATCH_INSERT_SIZE):
+        batch = records_to_insert_or_update[i:i+BATCH_INSERT_SIZE]
         try:
+            # Using .upsert is more efficient if you want to update existing records
+            # based on 'id' and insert new ones. If you always want new history entries,
+            # then .insert is fine. For history, creating new entries is usually desired.
+            # If your table has a 'created_at' or similar, you might not need 'data'.
+            # For this example, we assume 'data' is a custom timestamp for the record.
+            
+            # If your history table has a unique constraint on (id, data) or just 'id',
+            # you might need to handle potential conflicts if running the script multiple times
+            # for the same data that hasn't changed since last run.
+            # However, the logic above only prepares records that are new or changed,
+            # so simple 'insert' should work.
+
             await asyncio.to_thread(supabase.table("history").insert(batch).execute)
-            logger.info(f"History Upload: Uploaded batch {i//500+1} ({len(batch)} records) to Supabase.")
+            logger.info(f"History Upload: Uploaded batch {i//BATCH_INSERT_SIZE+1} ({len(batch)} records) to Supabase.")
         except Exception as e:
-            logger.error(f"History Upload: Error uploading batch {i//500+1}: {e}")
+            logger.error(f"History Upload: Error uploading batch {i//BATCH_INSERT_SIZE+1}: {e}")
+            # You might want to implement more sophisticated error handling here,
+            # like writing failed batches to a file for later reprocessing.
 
 # --- Telegram Notification Logic ---
 def format_change_message(change_info: Dict[str, Any]) -> str:
-    """Formats a message for a detected price change."""
+    """Formats a message for a detected price change, suitable for Telegram."""
     curr_record = change_info['current']
     prev_record = change_info['previous']
+    
     name_ar = curr_record.get('commercial_name_ar') or curr_record.get('commercial_name_en') or "اسم غير متوفر"
-    old_price = prev_record.get('current_price')
-    new_price = curr_record.get('current_price')
-    old_price_str = f"{old_price:g}" if old_price is not None else "N/A"
-    new_price_str = f"{new_price:g}" if new_price is not None else "N/A"
+    old_price_val = prev_record.get('current_price')
+    new_price_val = curr_record.get('current_price')
+    
+    old_price_str = f"{old_price_val:g}" if old_price_val is not None else "N/A"
+    new_price_str = f"{new_price_val:g}" if new_price_val is not None else "N/A"
+    
     price_change_type = "🔄 تغير"
     try:
-        if float(new_price) > float(old_price): price_change_type = "⬆️ ارتفع"
-        elif float(new_price) < float(old_price): price_change_type = "⬇️ انخفض"
-    except (ValueError, TypeError, AttributeError): pass
-    return (f"💊✨ **تحديث سعر دواء** ✨💊\n\n"
-            f"**الاسم:** {name_ar}\n"
-            f"**السعر:** {price_change_type}\n"
-            f"   - **السعر الحالي:** {new_price_str}\n"
-            f"   - **السعر السابق:** {old_price_str}")
+        # Ensure values are floats for comparison if they are not None
+        if old_price_val is not None and new_price_val is not None:
+            old_price_float = float(old_price_val)
+            new_price_float = float(new_price_val)
+            if new_price_float > old_price_float:
+                price_change_type = "⬆️ ارتفع"
+            elif new_price_float < old_price_float:
+                price_change_type = "⬇️ انخفض"
+    except (ValueError, TypeError):
+        # If conversion fails, stick with the generic change type
+        pass
+        
+    return (
+        f"💊✨ **تحديث سعر دواء** ✨💊\n\n"
+        f"**الاسم:** {name_ar}\n"
+        f"**السعر:** {price_change_type}\n"
+        f"   - **السعر الحالي:** {new_price_str}\n"
+        f"   - **السعر السابق:** {old_price_str}"
+    )
 
-async def send_telegram_message(message: str):
+async def send_telegram_message(message: str, client: Optional[TelegramClient]):
     """Sends a message to the Telegram channel using the TARGET_CHANNEL variable."""
-    if not telegram_client_instance or not telegram_client_instance.is_connected():
-        logger.error("Telegram client not available, cannot send message.")
+    if not client or not client.is_connected():
+        logger.warning("Telegram client not available or not connected, cannot send message.")
         return
+    
+    target_channel = os.environ.get("TARGET_CHANNEL")
+    if not target_channel:
+        logger.warning("TARGET_CHANNEL not set in environment variables, cannot send message.")
+        return
+        
     try:
-        target_channel = os.environ.get("TARGET_CHANNEL")
-        if not target_channel:
-            logger.warning("TARGET_CHANNEL not set in environment variables, cannot send message.")
-            return
+        # Try converting to integer for chat ID, otherwise use as username/channel ID string
         entity = int(target_channel) if target_channel.lstrip('-').isdigit() else target_channel
-        await telegram_client_instance.send_message(entity, message)
-        logger.info(f"Notification sent to channel {target_channel}.")
+        await client.send_message(entity, message)
+        logger.info(f"Notification sent successfully to channel {target_channel}.")
+    except FloodWaitError as e:
+        logger.warning(f"Telegram flood wait error: {e}. Will retry later if needed.")
+        await asyncio.sleep(e.seconds)
+        # Optionally retry sending the message here
+        await send_telegram_message(message, client)
     except Exception as e:
-        logger.error(f"Failed to send Telegram message: {e}")
+        logger.error(f"Failed to send Telegram message to {target_channel}: {e}")
 
-async def compare_history_and_notify(script_start_time: datetime.datetime):
-    """Compares latest snapshots and sends notifications only for changes that are NEWER than the script start time."""
+async def compare_history_and_notify(script_start_time: datetime.datetime, telegram_client: Optional[TelegramClient]):
+    """
+    Compares latest drug history records and sends Telegram notifications for
+    price changes that occurred since the script started.
+    """
+    if not telegram_client or not telegram_client.is_connected():
+        logger.info("Telegram client not ready. Skipping notification check.")
+        return
+        
     logger.info("Checking for recent price changes to send notifications...")
     try:
+        # Fetch all unique drug IDs present in the history table
         ids_resp = await asyncio.to_thread(supabase.table("history").select("id").execute)
-        if not ids_resp.data: return
+        if not ids_resp.data:
+            logger.info("No IDs found in history table. Cannot check for changes.")
+            return
+        
         all_ids = list({str(row['id']) for row in ids_resp.data})
-        if not all_ids: return
+        if not all_ids:
+            logger.info("No valid IDs retrieved from history table.")
+            return
 
-        rpc_response = await asyncio.to_thread(supabase.rpc("get_latest_two_drug_history", {"p_ids": all_ids}).execute)
-        logger.info(f"Fetched {len(rpc_response.data) if hasattr(rpc_response, 'data') and rpc_response.data else 0} records from get_latest_two_drug_history RPC.")
-        if not hasattr(rpc_response, 'data') or not rpc_response.data: return
+        # Fetch the latest two records for each drug ID
+        # Adjust the RPC call or query to fetch the necessary data.
+        # Assuming 'get_latest_two_drug_history' returns records sorted by 'data' (timestamp)
+        # If your RPC does not sort, you might need to fetch more and sort manually.
+        rpc_response = await asyncio.to_thread(
+            supabase.rpc("get_latest_two_drug_history", {"p_ids": all_ids}).execute
+        )
+        
+        if not hasattr(rpc_response, 'data') or not rpc_response.data:
+            logger.info("No history data returned from RPC.")
+            return
 
         drug_history_grouped = defaultdict(list)
-        for record in rpc_response.data: drug_history_grouped[record["id"]].append(record)
+        for record in rpc_response.data:
+            drug_history_grouped[record["id"]].append(record)
 
+        notifications_sent = 0
         for drug_id, records in drug_history_grouped.items():
-            if len(records) < 2: continue
+            if len(records) < 2:
+                continue # Need at least two records to compare
+
+            # Ensure records are sorted by timestamp (most recent last)
             records.sort(key=lambda x: x['data'])
-            prev_record, curr_record = records[-2], records[-1]
             
+            prev_record, curr_record = records[-2], records[-1]
+
+            # Check if the current price has changed between the two latest records
             if are_values_different(prev_record.get("current_price"), curr_record.get("current_price")):
-                curr_record_timestamp = datetime.datetime.fromisoformat(curr_record['data'])
-                if curr_record_timestamp >= script_start_time:
-                    logger.info(f"FRESH price change detected for ID {drug_id}: {prev_record.get('current_price')} -> {curr_record.get('current_price')}")
-                    message = format_change_message({'previous': prev_record, 'current': curr_record})
-                    await send_telegram_message(message)
-                    await asyncio.sleep(1)
+                try:
+                    curr_record_timestamp = datetime.datetime.fromisoformat(curr_record['data'])
+                    # Only send notification if the change happened AFTER the script started
+                    if curr_record_timestamp >= script_start_time:
+                        logger.info(f"FRESH price change detected for Drug ID {drug_id} (Time: {curr_record['data']}). Prev: {prev_record.get('current_price')} -> Curr: {curr_record.get('current_price')}")
+                        message = format_change_message({'previous': prev_record, 'current': curr_record})
+                        await send_telegram_message(message, telegram_client)
+                        notifications_sent += 1
+                        await asyncio.sleep(1) # Small delay between notifications to avoid being rate-limited by Telegram
+                except ValueError:
+                    logger.warning(f"Could not parse timestamp for record ID {drug_id}: {curr_record.get('data')}")
+                except Exception as e:
+                    logger.error(f"Error processing notification for drug ID {drug_id}: {e}")
+        
+        logger.info(f"Finished checking for notifications. {notifications_sent} notifications sent.")
 
     except Exception as e:
-        logger.exception(f"Error during history comparison for notifications: {e}")
+        logger.exception(f"An unhandled error occurred during history comparison and notification: {e}")
 
 # --- Main Execution ---
 
-def map_api_record_to_internal(api_record: dict) -> dict:
+def map_api_record_to_internal(api_record: dict) -> Dict[str, Any]:
     """Maps API record fields to the expected internal schema."""
     return {
         "ID": api_record.get("id"),
@@ -250,62 +401,124 @@ def map_api_record_to_internal(api_record: dict) -> dict:
         "Previous Price": api_record.get("oldprice"),
         "Barcode": api_record.get("barcode"),
         "Dosage Form": api_record.get("dosage_form"),
-        # Add more mappings if needed
+        # Add more mappings if needed based on your API response
     }
 
 async def main():
-    """Main entry point."""
-    global telegram_client_instance
+    """Main entry point for the script."""
     script_start_time = datetime.datetime.now(datetime.timezone.utc)
-    logger.info(f"Script starting at {script_start_time.isoformat()}")
+    logger.info(f"Script starting at {script_start_time.isoformat()}...")
 
+    telegram_client_instance: Optional[TelegramClient] = None
     # Telegram client setup
     try:
-        api_id = os.environ.get("API_ID")
+        api_id_str = os.environ.get("API_ID")
         api_hash = os.environ.get("API_HASH")
         bot_token = os.environ.get("BOT_TOKEN")
-        if not all([api_id, api_hash, bot_token]):
-            raise ValueError("API_ID, API_HASH, or BOT_TOKEN not found in .env file.")
-        telegram_client_instance = TelegramClient('bot_session', int(api_id), api_hash)
-        await telegram_client_instance.start(bot_token=bot_token)
-        logger.info("Telegram client started successfully.")
+        
+        if not all([api_id_str, api_hash, bot_token]):
+            logger.warning("Telegram API credentials (API_ID, API_HASH, BOT_TOKEN) not fully set in .env file. Telegram notifications will be disabled.")
+        else:
+            api_id = int(api_id_str)
+            telegram_client_instance = TelegramClient('bot_session', api_id, api_hash)
+            await telegram_client_instance.start(bot_token=bot_token)
+            # A simple check to see if the client is authorized and connected.
+            if await telegram_client_instance.is_user_authorized():
+                logger.info("Telegram client started and authorized successfully.")
+            else:
+                logger.error("Telegram client failed to authorize. Check credentials or session.")
+                # If session is not authorized, it might need re-authentication or session file reset.
+                # For a bot, 'start(bot_token=bot_token)' should handle it.
+                # If it fails here, it might be a fundamental issue with the token or telethon setup.
+                await telegram_client_instance.disconnect()
+                telegram_client_instance = None
+
+    except ValueError:
+        logger.error("Invalid API_ID for Telegram. Please ensure it's a valid integer.")
+        telegram_client_instance = None
+    except FloodWaitError as e:
+        logger.error(f"Telegram FloodWaitError during client start: {e.seconds} seconds. Please wait or retry.")
+        telegram_client_instance = None
     except Exception as e:
-        logger.error(f"Failed to start Telegram client: {e}. Notifications will be disabled.")
+        logger.error(f"Failed to start Telegram client: {e}. Telegram notifications will be disabled.")
         telegram_client_instance = None
 
+    # API Fetching
+    # Generate search queries: all two-letter combinations of lowercase letters
+    search_queries = [f"{c1}{c2}" for c1 in string.ascii_lowercase for c2 in string.ascii_lowercase]
+    # Optionally add digits if your API handles them as search queries
+    # search_queries.extend([str(d) for d in range(10)])
+
+    if not API_URL:
+        logger.error("API_URL is not set. Cannot fetch drug data.")
+        return
+
+    all_raw_drugs = []
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS) # Semaphore to limit concurrent API requests
+
     try:
-        search_queries = [a + b for a in string.ascii_lowercase for b in string.ascii_lowercase] + [str(d) for d in range(10)]
         async with aiohttp.ClientSession() as session:
-            all_drugs = []
+            # Process all search queries in batches
             for i in range(0, len(search_queries), BATCH_SIZE):
                 batch_queries = search_queries[i:i+BATCH_SIZE]
-                logger.info(f"Starting API batch {i//BATCH_SIZE+1} ({len(batch_queries)} queries)...")
-                tasks = [fetch_drug_data_for_query(session, q) for q in batch_queries]
+                logger.info(f"Starting API batch {i//BATCH_SIZE + 1}/{len(search_queries)//BATCH_SIZE + (len(search_queries)%BATCH_SIZE > 0)}. Processing {len(batch_queries)} queries...")
+
+                tasks = [fetch_drug_data_for_query(session, q, semaphore) for q in batch_queries]
                 results = await asyncio.gather(*tasks)
-                for _, drugs in results:
-                    if drugs: all_drugs.extend(drugs)
-                logger.info(f"Batch {i//BATCH_SIZE+1}: Sleeping 5 seconds to avoid API rate limits...")
-                await asyncio.sleep(5)
-            logger.info(f"Sample drug record: {all_drugs[0] if all_drugs else 'No data'}")
-        if all_drugs:
-            mapped_drugs = [map_api_record_to_internal(d) for d in all_drugs if d.get("id")]
-            unique_drugs = list({d['ID']: d for d in mapped_drugs if d.get('ID')}.values())
-            logger.info(f"Found {len(all_drugs)} raw records, resulting in {len(unique_drugs)} unique drugs.")
-            await upload_to_history_async(unique_drugs)
-        else:
-            logger.info("No drugs found from API.")
-        await compare_history_and_notify(script_start_time)
+                
+                for _, drugs_from_batch in results:
+                    if drugs_from_batch:
+                        all_raw_drugs.extend(drugs_from_batch)
+                
+                # Add a delay between batches to be polite to the API, especially if MAX_CONCURRENT_REQUESTS is high
+                # or if you are hitting rate limits. Adjust this delay as needed.
+                if i + BATCH_SIZE < len(search_queries):
+                    sleep_duration = 5 # Seconds
+                    logger.info(f"Batch {i//BATCH_SIZE + 1} completed. Sleeping for {sleep_duration}s to avoid API rate limits...")
+                    await asyncio.sleep(sleep_duration)
+            
+            logger.info(f"Finished fetching data from API. Found {len(all_raw_drugs)} raw drug records.")
+
+            if all_raw_drugs:
+                # Map API records to internal structure and remove duplicates by 'ID'
+                mapped_drugs = [map_api_record_to_internal(d) for d in all_raw_drugs if d.get("ID")]
+                
+                # Create a dictionary to hold unique drugs, keyed by 'ID'
+                unique_drugs_dict = {}
+                for d in mapped_drugs:
+                    drug_id = d.get("ID")
+                    if drug_id and drug_id not in unique_drugs_dict:
+                        unique_drugs_dict[drug_id] = d
+                
+                unique_drugs_list = list(unique_drugs_dict.values())
+                logger.info(f"Processed {len(mapped_drugs)} records, resulting in {len(unique_drugs_list)} unique drugs.")
+
+                # Upload processed drugs to Supabase history
+                await upload_to_history_async(unique_drugs_list)
+            else:
+                logger.info("No drug data was fetched from the API.")
+            
+            # After processing API data and uploading to history, check for notifications
+            await compare_history_and_notify(script_start_time, telegram_client_instance)
+
     except Exception as e:
-        logger.exception(f"An unhandled error occurred in main loop: {e}")
+        logger.exception(f"An unhandled error occurred in the main execution loop: {e}")
     finally:
         if telegram_client_instance and telegram_client_instance.is_connected():
             await telegram_client_instance.disconnect()
             logger.info("Telegram client disconnected.")
-        logger.info("Script finished.")
+        logger.info("Script finished execution.")
 
 if __name__ == "__main__":
-    if sys.platform == 'win32': asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    # Set Windows ProactorEventLoopPolicy for Windows compatibility if needed
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        
     start_time = time.time()
-    asyncio.run(main())
-    end_time = time.time()
-    logger.info(f"Script completed in {end_time - start_time:.2f} seconds")
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Script interrupted by user.")
+    finally:
+        end_time = time.time()
+        logger.info(f"Script completed in {end_time - start_time:.2f} seconds.")
