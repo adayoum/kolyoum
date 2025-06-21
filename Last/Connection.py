@@ -167,13 +167,13 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]):
 
     # --- Check if history table is empty ---
     try:
-        # Fetch a count of existing records to determine if the table is empty
-        count_resp = await asyncio.to_thread(
-            supabase.table("history").select("id", count='exact').limit(1).execute() # Limit to 1 and use count to check for existence efficiently
-        )
-        # If count_resp.count is 0 or data is empty, it means the table is empty.
-        is_history_empty = count_resp.count == 0 
-        
+        # Fetch the count of records to determine if the table is empty
+        # Pass the function to be executed in the thread
+        count_query = supabase.table("history").select("id", count='exact').limit(1).execute
+        count_resp = await asyncio.to_thread(count_query)
+
+        is_history_empty = count_resp.count == 0
+
         if is_history_empty:
             logger.info("History table is empty. Populating with all found drugs.")
             records_to_insert = [] # Prepare records for initial insertion
@@ -182,14 +182,14 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]):
                 if not drug_id:
                     logger.warning("Skipping drug with no ID during initial population.")
                     continue
-                
+
                 record_data = {
                     "id": drug_id,
                     "data": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 }
                 # Populate all relevant fields for the initial insert
                 fields_to_check_mapping = {
-                    "ID": "id", # Primary key
+                    "ID": "id",
                     "Commercial Name (English)": "commercial_name_en",
                     "Commercial Name (Arabic)": "commercial_name_ar",
                     "Current Price": "current_price",
@@ -216,24 +216,22 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]):
             for i in range(0, len(records_to_insert), BATCH_INSERT_SIZE):
                 batch = records_to_insert[i:i+BATCH_INSERT_SIZE]
                 try:
-                    # Use insert here as it's the initial population
-                    await asyncio.to_thread(supabase.table("history").insert(batch).execute)
+                    insert_query = supabase.table("history").insert(batch).execute
+                    await asyncio.to_thread(insert_query)
                     logger.info(f"Initial Population: Uploaded batch {i//BATCH_INSERT_SIZE+1} ({len(batch)} records) to Supabase.")
                 except Exception as e:
                     logger.error(f"Initial Population: Error uploading batch {i//BATCH_INSERT_SIZE+1}: {e}")
             return # Exit after initial population
-        
+
         # --- If history table is NOT empty, proceed with checking for changes ---
         logger.info(f"[Supabase] Fetching existing records for {len(drugs)} potential drugs for comparison...")
-        # Get all unique IDs from the drugs list to query Supabase efficiently
         all_ids_to_check = list({str(d["ID"]) for d in drugs if d.get("ID")})
         if not all_ids_to_check:
             logger.info("No valid IDs to check against Supabase history.")
             return
 
-        resp = await asyncio.to_thread(
-            supabase.rpc("get_latest_record_for_ids", {"p_ids": all_ids_to_check}).execute
-        )
+        rpc_query = supabase.rpc("get_latest_record_for_ids", {"p_ids": all_ids_to_check}).execute
+        resp = await asyncio.to_thread(rpc_query)
         last_row_by_id = {row['id']: row for row in resp.data} if resp.data else {}
         logger.info(f"[Supabase] Retrieved {len(last_row_by_id)} existing history records for comparison.")
 
@@ -248,7 +246,6 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]):
             "Dosage Form": "dosage_form",
         }
 
-        # This part handles the case where the table is NOT empty
         for drug in drugs:
             drug_id = str(drug.get("ID"))
             if not drug_id:
@@ -256,20 +253,16 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]):
                 continue
 
             last_row = last_row_by_id.get(drug_id)
-            
-            # If a record with this ID doesn't exist in history, it means it's a new drug
-            # that wasn't in the table before. We should insert it.
             is_new_record = not last_row
 
             has_changed = False
-            if not is_new_record: # Only check for changes if the record already exists
+            if not is_new_record:
                 for api_key, db_key in fields_to_check_mapping.items():
                     if db_key == "id": continue
                     if are_values_different(drug.get(api_key), last_row.get(db_key)):
                         has_changed = True
                         break
 
-            # Add to the list if it's a brand new drug OR if an existing drug has changed
             if is_new_record or has_changed:
                 record_data = {
                     "id": drug_id,
@@ -289,14 +282,12 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]):
             return
 
         logger.info(f"History Upload: Found {len(records_to_insert_or_update)} new or changed records to upload.")
-        
         BATCH_INSERT_SIZE = 500
         for i in range(0, len(records_to_insert_or_update), BATCH_INSERT_SIZE):
             batch = records_to_insert_or_update[i:i+BATCH_INSERT_SIZE]
             try:
-                # Use insert here, as we've already filtered for new/changed records.
-                # If a record truly has no changes, it won't be in this batch.
-                await asyncio.to_thread(supabase.table("history").insert(batch).execute)
+                insert_query = supabase.table("history").insert(batch).execute
+                await asyncio.to_thread(insert_query)
                 logger.info(f"History Upload: Uploaded batch {i//BATCH_INSERT_SIZE+1} ({len(batch)} records) to Supabase.")
             except Exception as e:
                 logger.error(f"History Upload: Error uploading batch {i//BATCH_INSERT_SIZE+1}: {e}")
@@ -309,14 +300,14 @@ def format_change_message(change_info: Dict[str, Any]) -> str:
     """Formats a message for a detected price change, suitable for Telegram."""
     curr_record = change_info['current']
     prev_record = change_info['previous']
-    
+
     name_ar = curr_record.get('commercial_name_ar') or curr_record.get('commercial_name_en') or "اسم غير متوفر"
     old_price_val = prev_record.get('current_price')
     new_price_val = curr_record.get('current_price')
-    
+
     old_price_str = f"{old_price_val:g}" if old_price_val is not None else "N/A"
     new_price_str = f"{new_price_val:g}" if new_price_val is not None else "N/A"
-    
+
     price_change_type = "🔄 تغير"
     try:
         # Ensure values are floats for comparison if they are not None
@@ -330,7 +321,7 @@ def format_change_message(change_info: Dict[str, Any]) -> str:
     except (ValueError, TypeError):
         # If conversion fails, stick with the generic change type
         pass
-        
+
     return (
         f"💊✨ **تحديث سعر دواء** ✨💊\n\n"
         f"**الاسم:** {name_ar}\n"
@@ -344,12 +335,12 @@ async def send_telegram_message(message: str, client: Optional[TelegramClient]):
     if not client or not client.is_connected():
         logger.warning("Telegram client not available or not connected, cannot send message.")
         return
-    
+
     target_channel = os.environ.get("TARGET_CHANNEL")
     if not target_channel:
         logger.warning("TARGET_CHANNEL not set in environment variables, cannot send message.")
         return
-        
+
     try:
         # Try converting to integer for chat ID, otherwise use as username/channel ID string
         entity = int(target_channel) if target_channel.lstrip('-').isdigit() else target_channel
@@ -371,28 +362,25 @@ async def compare_history_and_notify(script_start_time: datetime.datetime, teleg
     if not telegram_client or not telegram_client.is_connected():
         logger.info("Telegram client not ready. Skipping notification check.")
         return
-        
+
     logger.info("Checking for recent price changes to send notifications...")
     try:
         # Fetch all unique drug IDs present in the history table
-        ids_resp = await asyncio.to_thread(supabase.table("history").select("id").execute)
+        ids_query = supabase.table("history").select("id").execute
+        ids_resp = await asyncio.to_thread(ids_query)
         if not ids_resp.data:
             logger.info("No IDs found in history table. Cannot check for changes.")
             return
-        
+
         all_ids = list({str(row['id']) for row in ids_resp.data})
         if not all_ids:
             logger.info("No valid IDs retrieved from history table.")
             return
 
         # Fetch the latest two records for each drug ID
-        # Adjust the RPC call or query to fetch the necessary data.
-        # Assuming 'get_latest_two_drug_history' returns records sorted by 'data' (timestamp)
-        # If your RPC does not sort, you might need to fetch more and sort manually.
-        rpc_response = await asyncio.to_thread(
-            supabase.rpc("get_latest_two_drug_history", {"p_ids": all_ids}).execute
-        )
-        
+        rpc_query = supabase.rpc("get_latest_two_drug_history", {"p_ids": all_ids}).execute
+        rpc_response = await asyncio.to_thread(rpc_query)
+
         if not hasattr(rpc_response, 'data') or not rpc_response.data:
             logger.info("No history data returned from RPC.")
             return
@@ -408,7 +396,7 @@ async def compare_history_and_notify(script_start_time: datetime.datetime, teleg
 
             # Ensure records are sorted by timestamp (most recent last)
             records.sort(key=lambda x: x['data'])
-            
+
             prev_record, curr_record = records[-2], records[-1]
 
             # Check if the current price has changed between the two latest records
@@ -426,7 +414,7 @@ async def compare_history_and_notify(script_start_time: datetime.datetime, teleg
                     logger.warning(f"Could not parse timestamp for record ID {drug_id}: {curr_record.get('data')}")
                 except Exception as e:
                     logger.error(f"Error processing notification for drug ID {drug_id}: {e}")
-        
+
         logger.info(f"Finished checking for notifications. {notifications_sent} notifications sent.")
 
     except Exception as e:
@@ -458,7 +446,7 @@ async def main():
         api_id_str = os.environ.get("API_ID")
         api_hash = os.environ.get("API_HASH")
         bot_token = os.environ.get("BOT_TOKEN")
-        
+
         if not all([api_id_str, api_hash, bot_token]):
             logger.warning("Telegram API credentials (API_ID, API_HASH, BOT_TOKEN) not fully set in .env file. Telegram notifications will be disabled.")
         else:
@@ -505,28 +493,28 @@ async def main():
 
                 tasks = [fetch_drug_data_for_query(session, q, semaphore) for q in batch_queries]
                 results = await asyncio.gather(*tasks)
-                
+
                 for _, drugs_from_batch in results:
                     if drugs_from_batch:
                         all_raw_drugs.extend(drugs_from_batch)
-                
+
                 # Add a delay between batches to be polite to the API, especially if MAX_CONCURRENT_REQUESTS is high
                 # or if you are hitting rate limits. Adjust this delay as needed.
                 if i + BATCH_SIZE < len(search_queries):
                     sleep_duration = 5 # Seconds
                     logger.info(f"Batch {i//BATCH_SIZE + 1} completed. Sleeping for {sleep_duration}s to avoid API rate limits...")
                     await asyncio.sleep(sleep_duration)
-            
+
             logger.info(f"Finished fetching data from API. Found {len(all_raw_drugs)} raw drug records.")
 
             # Log a sample of the raw data to diagnose potential issues
             if all_raw_drugs:
                 logger.info(f"Sample raw drug record: {all_raw_drugs[0]}")
-            
+
             if all_raw_drugs:
                 # Map API records to internal structure and remove duplicates by 'ID'
                 mapped_drugs = [map_api_record_to_internal(d) for d in all_raw_drugs if d and isinstance(d, dict) and d.get("id")]
-                
+
                 if not mapped_drugs:
                     logger.warning("Mapping raw drugs to internal structure resulted in an empty list. Check 'map_api_record_to_internal' function and API response format.")
 
@@ -536,10 +524,10 @@ async def main():
                     drug_id = d.get("ID")
                     if drug_id and drug_id not in unique_drugs_dict:
                         unique_drugs_dict[drug_id] = d
-                
+
                 unique_drugs_list = list(unique_drugs_dict.values())
                 logger.info(f"Processed {len(mapped_drugs)} records, resulting in {len(unique_drugs_list)} unique drugs.")
-                
+
                 if unique_drugs_list:
                     # Upload processed drugs to Supabase history
                     await upload_to_history_async(unique_drugs_list)
@@ -547,7 +535,7 @@ async def main():
                     logger.warning("No unique drugs found to upload. Please check the raw data and mapping logic.")
             else:
                 logger.info("No drug data was fetched from the API.")
-            
+
             # After processing API data and uploading to history, check for notifications
             await compare_history_and_notify(script_start_time, telegram_client_instance)
 
@@ -563,7 +551,7 @@ if __name__ == "__main__":
     # Set Windows ProactorEventLoopPolicy for Windows compatibility if needed
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-        
+
     start_time = time.time()
     try:
         asyncio.run(main())
