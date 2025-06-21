@@ -169,10 +169,10 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]):
     try:
         # Fetch a count of existing records to determine if the table is empty
         count_resp = await asyncio.to_thread(
-            supabase.table("history").select("id").limit(1).execute() # Limit to 1 to check for existence efficiently
+            supabase.table("history").select("id", count='exact').limit(1).execute() # Limit to 1 and use count to check for existence efficiently
         )
-        # If count_resp.data is an empty list, it means the table is empty.
-        is_history_empty = not count_resp.data 
+        # If count_resp.count is 0 or data is empty, it means the table is empty.
+        is_history_empty = count_resp.count == 0 
         
         if is_history_empty:
             logger.info("History table is empty. Populating with all found drugs.")
@@ -519,10 +519,17 @@ async def main():
             
             logger.info(f"Finished fetching data from API. Found {len(all_raw_drugs)} raw drug records.")
 
+            # Log a sample of the raw data to diagnose potential issues
+            if all_raw_drugs:
+                logger.info(f"Sample raw drug record: {all_raw_drugs[0]}")
+            
             if all_raw_drugs:
                 # Map API records to internal structure and remove duplicates by 'ID'
-                mapped_drugs = [map_api_record_to_internal(d) for d in all_raw_drugs if d.get("ID")]
+                mapped_drugs = [map_api_record_to_internal(d) for d in all_raw_drugs if d and isinstance(d, dict) and d.get("id")]
                 
+                if not mapped_drugs:
+                    logger.warning("Mapping raw drugs to internal structure resulted in an empty list. Check 'map_api_record_to_internal' function and API response format.")
+
                 # Create a dictionary to hold unique drugs, keyed by 'ID'
                 unique_drugs_dict = {}
                 for d in mapped_drugs:
@@ -532,9 +539,12 @@ async def main():
                 
                 unique_drugs_list = list(unique_drugs_dict.values())
                 logger.info(f"Processed {len(mapped_drugs)} records, resulting in {len(unique_drugs_list)} unique drugs.")
-
-                # Upload processed drugs to Supabase history
-                await upload_to_history_async(unique_drugs_list)
+                
+                if unique_drugs_list:
+                    # Upload processed drugs to Supabase history
+                    await upload_to_history_async(unique_drugs_list)
+                else:
+                    logger.warning("No unique drugs found to upload. Please check the raw data and mapping logic.")
             else:
                 logger.info("No drug data was fetched from the API.")
             
