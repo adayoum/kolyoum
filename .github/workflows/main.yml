@@ -1,8 +1,6 @@
 name: DrugShift Bot Scheduled Run
 
 on:
-  schedule:
-    
   workflow_dispatch:
 
 jobs:
