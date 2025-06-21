@@ -48,9 +48,33 @@ ch = logging.StreamHandler(sys.stdout)
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
+# --- Supabase Key Check ---
+def log_supabase_key_type(key: str):
+    if not key:
+        logger.warning("SUPABASE_KEY is empty! Check your .env file.")
+        return
+    if key.startswith("eyJ") and len(key) > 60:
+        if "anon" in key:
+            logger.warning("Supabase key appears to be an anon/public key. You MUST use the service_role key for inserts!")
+        else:
+            logger.info("Supabase key appears to be a service_role (secret) key.")
+    else:
+        logger.warning("Supabase key format is unusual. Double-check that you are using the service_role key.")
+
+log_supabase_key_type(SUPABASE_KEY)
+
 # Initialize clients
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-telegram_client_instance: Optional[TelegramClient] = None
+
+# --- Supabase Key Check ---
+def is_service_role_key(key: str) -> bool:
+    # Supabase service_role keys are long and not the same as anon keys
+    return key and ("service_role" in key or len(key) > 60)
+
+if not is_service_role_key(SUPABASE_KEY):
+    logger.warning("[SECURITY] The SUPABASE_KEY in use does NOT appear to be a service_role key! You MUST use the service_role key for privileged inserts. Current key starts with: %s...", SUPABASE_KEY[:8])
+else:
+    logger.info("Supabase is using a service_role key (starts with: %s...)", SUPABASE_KEY[:12])
 
 # --- Helper Functions ---
 def are_values_different(val1: Any, val2: Any) -> bool:
@@ -72,28 +96,32 @@ def to_float_or_none(value: Any) -> Optional[float]:
         return None
 
 # --- Main Logic ---
+# --- Enhanced Exponential Backoff for API fetch ---
 async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query: str):
-    """Fetches drug data for a single query."""
+    """Fetches drug data for a single query with exponential backoff."""
     payload = {"search": "1", "searchq": search_query, "order_by": "name ASC", "page": "1"}
-    try:
-        async with asyncio.Semaphore(MAX_CONCURRENT_REQUESTS):
-            for attempt in range(MAX_RETRIES):
-                try:
-                    async with session.post(API_URL, data=payload, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-                        response.raise_for_status()
-                        data = await response.json(content_type=None)
-                        count = len(data.get('data', [])) if isinstance(data.get('data', []), list) else 0
-                        logger.info(f"API '{search_query}': {count} results returned.")
-                        return search_query, data.get('data', [])
-                except (aiohttp.ClientError, asyncio.TimeoutError):
-                    if attempt >= MAX_RETRIES - 1: raise
-                    await asyncio.sleep(RETRY_DELAY_SECONDS)
-    except Exception as e:
-        logger.error(f"API '{search_query}': Failed after all retries - {type(e).__name__}")
-        return search_query, []
+    for attempt in range(MAX_RETRIES):
+        try:
+            async with asyncio.Semaphore(MAX_CONCURRENT_REQUESTS):
+                async with session.post(API_URL, data=payload, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+                    response.raise_for_status()
+                    data = await response.json(content_type=None)
+                    count = len(data.get('data', [])) if isinstance(data.get('data', []), list) else 0
+                    logger.info(f"API '{search_query}': {count} results returned.")
+                    return search_query, data.get('data', [])
+        except (aiohttp.ClientError, asyncio.TimeoutError, aiohttp.ServerDisconnectedError) as e:
+            wait_time = RETRY_DELAY_SECONDS * (2 ** attempt)
+            logger.warning(f"API '{search_query}': {type(e).__name__} on attempt {attempt+1}/{MAX_RETRIES}. Retrying in {wait_time}s...")
+            await asyncio.sleep(wait_time)
+        except Exception as e:
+            logger.error(f"API '{search_query}': Failed after all retries - {type(e).__name__}: {e}")
+            return search_query, []
+    logger.error(f"API '{search_query}': All retries failed.")
+    return search_query, []
 
 async def upload_to_history_async(drugs: list):
     """Uploads new or changed drug records to the database."""
+    logger.info(f"[Supabase] Using key: {'anon' if 'anon' in SUPABASE_KEY else 'service_role or custom'} (length: {len(SUPABASE_KEY)})")
     if not drugs:
         logger.info("upload_to_history_async: No drugs to process.")
         return
@@ -253,6 +281,8 @@ async def main():
                 results = await asyncio.gather(*tasks)
                 for _, drugs in results:
                     if drugs: all_drugs.extend(drugs)
+                logger.info(f"Batch {i//100+1}: Sleeping 2 seconds to avoid API rate limits...")
+                await asyncio.sleep(2)
             logger.info(f"Sample drug record: {all_drugs[0] if all_drugs else 'No data'}")
         
         if all_drugs:
