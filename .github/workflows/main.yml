@@ -2,7 +2,7 @@ name: DrugShift Bot Scheduled Run
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    
   workflow_dispatch:
 
 jobs:
