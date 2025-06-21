@@ -28,7 +28,8 @@ DEFAULT_HEADERS = {
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", 10))
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", 3))
 RETRY_DELAY_SECONDS = int(os.environ.get("RETRY_DELAY_SECONDS", 2))
-MAX_CONCURRENT_REQUESTS = int(os.environ.get("MAX_CONCURRENT_REQUESTS", 50))
+MAX_CONCURRENT_REQUESTS = int(os.environ.get("MAX_CONCURRENT_REQUESTS", 5))  # قللناها إلى 5 فقط
+BATCH_SIZE = 10  # دفعة صغيرة فقط
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -258,11 +259,13 @@ async def main():
     script_start_time = datetime.datetime.now(datetime.timezone.utc)
     logger.info(f"Script starting at {script_start_time.isoformat()}")
 
+    # Telegram client setup
     try:
         api_id = os.environ.get("API_ID")
         api_hash = os.environ.get("API_HASH")
         bot_token = os.environ.get("BOT_TOKEN")
-        if not all([api_id, api_hash, bot_token]): raise ValueError("API_ID, API_HASH, or BOT_TOKEN not found in .env file.")
+        if not all([api_id, api_hash, bot_token]):
+            raise ValueError("API_ID, API_HASH, or BOT_TOKEN not found in .env file.")
         telegram_client_instance = TelegramClient('bot_session', int(api_id), api_hash)
         await telegram_client_instance.start(bot_token=bot_token)
         logger.info("Telegram client started successfully.")
@@ -272,19 +275,18 @@ async def main():
 
     try:
         search_queries = [a + b for a in string.ascii_lowercase for b in string.ascii_lowercase] + [str(d) for d in range(10)]
-        
         async with aiohttp.ClientSession() as session:
             all_drugs = []
-            for i in range(0, len(search_queries), 100):
-                batch_queries = search_queries[i:i+100]
+            for i in range(0, len(search_queries), BATCH_SIZE):
+                batch_queries = search_queries[i:i+BATCH_SIZE]
+                logger.info(f"Starting API batch {i//BATCH_SIZE+1} ({len(batch_queries)} queries)...")
                 tasks = [fetch_drug_data_for_query(session, q) for q in batch_queries]
                 results = await asyncio.gather(*tasks)
                 for _, drugs in results:
                     if drugs: all_drugs.extend(drugs)
-                logger.info(f"Batch {i//100+1}: Sleeping 2 seconds to avoid API rate limits...")
-                await asyncio.sleep(2)
+                logger.info(f"Batch {i//BATCH_SIZE+1}: Sleeping 5 seconds to avoid API rate limits...")
+                await asyncio.sleep(5)
             logger.info(f"Sample drug record: {all_drugs[0] if all_drugs else 'No data'}")
-        
         if all_drugs:
             mapped_drugs = [map_api_record_to_internal(d) for d in all_drugs if d.get("id")]
             unique_drugs = list({d['ID']: d for d in mapped_drugs if d.get('ID')}.values())
@@ -292,7 +294,6 @@ async def main():
             await upload_to_history_async(unique_drugs)
         else:
             logger.info("No drugs found from API.")
-
         await compare_history_and_notify(script_start_time)
     except Exception as e:
         logger.exception(f"An unhandled error occurred in main loop: {e}")
