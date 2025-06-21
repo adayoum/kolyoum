@@ -210,6 +210,20 @@ async def compare_history_and_notify(script_start_time: datetime.datetime):
         logger.exception(f"Error during history comparison for notifications: {e}")
 
 # --- Main Execution ---
+
+def map_api_record_to_internal(api_record: dict) -> dict:
+    """Maps API record fields to the expected internal schema."""
+    return {
+        "ID": api_record.get("id"),
+        "Commercial Name (English)": api_record.get("name"),
+        "Commercial Name (Arabic)": api_record.get("arabic"),
+        "Current Price": api_record.get("price"),
+        "Previous Price": api_record.get("oldprice"),
+        "Barcode": api_record.get("barcode"),
+        "Dosage Form": api_record.get("dosage_form"),
+        # Add more mappings if needed
+    }
+
 async def main():
     """Main entry point."""
     global telegram_client_instance
@@ -242,7 +256,8 @@ async def main():
             logger.info(f"Sample drug record: {all_drugs[0] if all_drugs else 'No data'}")
         
         if all_drugs:
-            unique_drugs = list({d['ID']: d for d in all_drugs if d.get('ID')}.values())
+            mapped_drugs = [map_api_record_to_internal(d) for d in all_drugs if d.get("id")]
+            unique_drugs = list({d['ID']: d for d in mapped_drugs if d.get('ID')}.values())
             logger.info(f"Found {len(all_drugs)} raw records, resulting in {len(unique_drugs)} unique drugs.")
             await upload_to_history_async(unique_drugs)
         else:
