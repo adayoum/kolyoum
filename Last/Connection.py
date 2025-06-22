@@ -40,7 +40,8 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 if not logger.handlers:
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
-    fh = logging.FileHandler("drug_scraper_final.log", encoding='utf-8')
+    # Use a unique name for the log file to avoid conflicts
+    fh = logging.FileHandler("connection_scraper.log", encoding='utf-8')
     fh.setFormatter(formatter)
     logger.addHandler(fh)
     ch = logging.StreamHandler(sys.stdout)
@@ -96,8 +97,6 @@ def safe_convert_timestamp(ts_str: Optional[str]) -> Optional[str]:
     if not ts_str or not ts_str.isdigit():
         return None
     try:
-        # The timestamp seems to have 13 digits, which means it includes milliseconds.
-        # Standard Unix timestamps have 10 digits. We divide by 1000.
         ts_float = float(ts_str) / 1000.0
         dt_object = datetime.datetime.fromtimestamp(ts_float, tz=datetime.timezone.utc)
         return dt_object.isoformat()
@@ -144,7 +143,7 @@ async def fetch_drug_data_for_query(
     logger.error(f"API '{search_query}': All {MAX_RETRIES} retries failed.")
     return search_query, []
 
-# --- Supabase Upload Logic ---
+# --- Supabase Upload Logic (EDITED with BATCHING) ---
 async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not supabase:
         logger.warning("Supabase client not initialized. Skipping upload.")
@@ -190,15 +189,32 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
                     logger.error(f"Initial Population: Error uploading batch {i//BATCH_INSERT_SIZE+1}: {e}")
             return []
 
-        logger.info(f"[Supabase] Fetching existing records for {len(drugs)} potential drugs...")
+        # --- MODIFIED PART: BATCHING RPC CALLS ---
+        logger.info(f"[Supabase] Preparing to fetch history for {len(drugs)} potential drugs.")
         all_ids_to_check = list({str(d["ID"]) for d in drugs if d.get("ID")})
         if not all_ids_to_check: return []
 
-        rpc_query = supabase.rpc("get_latest_record_for_ids", {"p_ids": all_ids_to_check}).execute
-        resp = await asyncio.to_thread(rpc_query)
-        last_row_by_id = {row['id']: row for row in resp.data} if resp.data else {}
-        logger.info(f"[Supabase] Retrieved {len(last_row_by_id)} existing history records.")
+        last_row_by_id = {}
+        BATCH_RPC_SIZE = 1000  # Process 1000 IDs at a time. Adjust if needed.
+        logger.info(f"Processing {len(all_ids_to_check)} IDs in batches of {BATCH_RPC_SIZE} to avoid timeout...")
 
+        for i in range(0, len(all_ids_to_check), BATCH_RPC_SIZE):
+            batch_ids = all_ids_to_check[i:i + BATCH_RPC_SIZE]
+            logger.info(f"Fetching history for batch {i//BATCH_RPC_SIZE + 1} ({len(batch_ids)} IDs)...")
+            
+            try:
+                rpc_query = supabase.rpc("get_latest_record_for_ids", {"p_ids": batch_ids}).execute
+                resp = await asyncio.to_thread(rpc_query)
+                
+                if resp.data:
+                    for row in resp.data:
+                        last_row_by_id[row['id']] = row
+            except Exception as e:
+                logger.error(f"Error fetching batch {i//BATCH_RPC_SIZE + 1}: {e}. This batch will be skipped.")
+        
+        logger.info(f"[Supabase] Retrieved a total of {len(last_row_by_id)} existing history records across all batches.")
+        # --- END OF MODIFIED PART ---
+        
         records_to_insert_or_update = []
         for drug in drugs:
             drug_id = str(drug.get("ID"))
@@ -238,7 +254,7 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
         return records_to_insert_or_update
 
     except Exception as e:
-        logger.exception(f"An error occurred during Supabase upload logic: {e}")
+        logger.exception(f"An unhandled error occurred during Supabase upload logic: {e}")
         return []
 
 # --- Telegram Notification Logic ---
@@ -305,18 +321,19 @@ async def send_telegram_message(message: str, client: Optional[TelegramClient]):
     if not client or not client.is_connected():
         logger.warning("Telegram client not available, cannot send message.")
         return
-    target_channel = os.environ.get("TARGET_CHANNEL")
-    if not target_channel:
+    target_channel_str = os.environ.get("TARGET_CHANNEL")
+    if not target_channel_str:
         logger.warning("TARGET_CHANNEL not set.")
         return
     try:
-        entity = int(target_channel) if target_channel.lstrip('-').isdigit() else target_channel
-        await client.send_message(entity, message, parse_mode='md')
+        # Ensure target_channel is an integer if it's a numeric string
+        target_channel = int(target_channel_str) if target_channel_str.lstrip('-').isdigit() else target_channel_str
+        await client.send_message(target_channel, message, parse_mode='md')
         logger.info(f"Notification sent to channel {target_channel}.")
     except FloodWaitError as e:
         logger.warning(f"Telegram flood wait error: {e}. Retrying in {e.seconds}s.")
         await asyncio.sleep(e.seconds)
-        await send_telegram_message(message, client)
+        await send_telegram_message(message, client) # Retry the same message
     except Exception as e:
         logger.error(f"Failed to send Telegram message: {e}")
 
@@ -357,7 +374,7 @@ async def compare_and_notify_changes(changed_records: List[Dict[str, Any]], tele
                 message = format_change_message({'previous': prev_record, 'current': curr_record})
                 await send_telegram_message(message, telegram_client)
                 notifications_sent += 1
-                await asyncio.sleep(1)
+                await asyncio.sleep(1) # Sleep to avoid hitting Telegram rate limits
 
         logger.info(f"Finished notification check. Sent {notifications_sent} notifications.")
     except Exception as e:
@@ -385,7 +402,8 @@ async def main():
         api_id_str, api_hash, bot_token = os.environ.get("API_ID"), os.environ.get("API_HASH"), os.environ.get("BOT_TOKEN")
         if all([api_id_str, api_hash, bot_token]):
             api_id = int(api_id_str)
-            telegram_client_instance = TelegramClient('bot_session', api_id, api_hash)
+            # Use a unique session name to avoid conflicts with the bot's session
+            telegram_client_instance = TelegramClient('scraper_session', api_id, api_hash)
             await telegram_client_instance.start(bot_token=bot_token)
             if await telegram_client_instance.is_user_authorized():
                 logger.info("Telegram client started and authorized successfully.")
@@ -401,6 +419,9 @@ async def main():
 
     if not API_URL:
         logger.error("API_URL is not set. Cannot fetch drug data.")
+        # Cleanly disconnect if telegram client was started
+        if telegram_client_instance and telegram_client_instance.is_connected():
+            await telegram_client_instance.disconnect()
         return
 
     all_raw_drugs = []
