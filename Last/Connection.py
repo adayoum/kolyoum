@@ -40,7 +40,6 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 if not logger.handlers:
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
-    # Use a unique name for the log file to avoid conflicts
     fh = logging.FileHandler("connection_scraper.log", encoding='utf-8')
     fh.setFormatter(formatter)
     logger.addHandler(fh)
@@ -81,8 +80,10 @@ def are_values_different(val1: Any, val2: Any) -> bool:
     if v1_is_empty and v2_is_empty: return False
     if v1_is_empty or v2_is_empty: return True
     try:
+        # Use Decimal for accurate price comparison
         return Decimal(str(val1)) != Decimal(str(val2))
     except (InvalidOperation, TypeError, ValueError):
+        # Fallback to string comparison for non-numeric values
         return str(val1).strip() != str(val2).strip()
 
 def to_float_or_none(value: Any) -> Optional[float]:
@@ -143,7 +144,7 @@ async def fetch_drug_data_for_query(
     logger.error(f"API '{search_query}': All {MAX_RETRIES} retries failed.")
     return search_query, []
 
-# --- Supabase Upload Logic (EDITED with BATCHING) ---
+# --- Supabase Upload Logic (REVISED to PREVENT DUPLICATES) ---
 async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not supabase:
         logger.warning("Supabase client not initialized. Skipping upload.")
@@ -163,7 +164,7 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
             "Barcode": "barcode", "Dosage Form": "dosage_form",
             "last_price_update_date": "last_price_update_date"
         }
-
+        
         if is_history_empty:
             logger.info("History table is empty. Populating with all found drugs.")
             records_to_insert = []
@@ -189,13 +190,13 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
                     logger.error(f"Initial Population: Error uploading batch {i//BATCH_INSERT_SIZE+1}: {e}")
             return []
 
-        # --- MODIFIED PART: BATCHING RPC CALLS ---
-        logger.info(f"[Supabase] Preparing to fetch history for {len(drugs)} potential drugs.")
+        # --- MODIFIED LOGIC TO PREVENT DUPLICATES ---
+        logger.info(f"[Supabase] Preparing to fetch existing history for {len(drugs)} potential drugs.")
         all_ids_to_check = list({str(d["ID"]) for d in drugs if d.get("ID")})
         if not all_ids_to_check: return []
 
         last_row_by_id = {}
-        BATCH_RPC_SIZE = 1000  # Process 1000 IDs at a time. Adjust if needed.
+        BATCH_RPC_SIZE = 1000
         logger.info(f"Processing {len(all_ids_to_check)} IDs in batches of {BATCH_RPC_SIZE} to avoid timeout...")
 
         for i in range(0, len(all_ids_to_check), BATCH_RPC_SIZE):
@@ -213,37 +214,45 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
                 logger.error(f"Error fetching batch {i//BATCH_RPC_SIZE + 1}: {e}. This batch will be skipped.")
         
         logger.info(f"[Supabase] Retrieved a total of {len(last_row_by_id)} existing history records across all batches.")
-        # --- END OF MODIFIED PART ---
         
-        records_to_insert_or_update = []
+        records_to_insert = []
         for drug in drugs:
             drug_id = str(drug.get("ID"))
             if not drug_id: continue
 
             last_row = last_row_by_id.get(drug_id)
-            is_new_record = not last_row
-            has_changed = False
-
-            if not is_new_record:
-                for api_key, db_key in fields_to_check_mapping.items():
-                    if are_values_different(drug.get(api_key), last_row.get(db_key)):
-                        has_changed = True
-                        break
             
-            if is_new_record or has_changed:
+            # If the drug is completely new, add it.
+            if not last_row:
+                logger.info(f"New drug detected with ID {drug_id}. Adding to history.")
                 record_data = {"id": drug_id, "data": datetime.datetime.now(datetime.timezone.utc).isoformat()}
                 for api_key, db_key in fields_to_check_mapping.items():
                     record_data[db_key] = drug.get(api_key)
-                records_to_insert_or_update.append(record_data)
+                records_to_insert.append(record_data)
+                continue
 
-        if not records_to_insert_or_update:
-            logger.info("History Upload: No new or changed records detected.")
+            # **KEY CHANGE**: Check if ANY of the values are different. If not, do nothing.
+            has_changed = False
+            for api_key, db_key in fields_to_check_mapping.items():
+                if are_values_different(drug.get(api_key), last_row.get(db_key)):
+                    has_changed = True
+                    logger.info(f"Change detected for ID {drug_id}. Field '{db_key}' is different. DB: '{last_row.get(db_key)}' vs API: '{drug.get(api_key)}'.")
+                    break 
+            
+            if has_changed:
+                record_data = {"id": drug_id, "data": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+                for api_key, db_key in fields_to_check_mapping.items():
+                    record_data[db_key] = drug.get(api_key)
+                records_to_insert.append(record_data)
+
+        if not records_to_insert:
+            logger.info("History Upload: No new or changed records detected. All data is up-to-date.")
             return []
 
-        logger.info(f"History Upload: Found {len(records_to_insert_or_update)} new or changed records to upload.")
+        logger.info(f"History Upload: Found {len(records_to_insert)} new or changed records to upload.")
         BATCH_INSERT_SIZE = 500
-        for i in range(0, len(records_to_insert_or_update), BATCH_INSERT_SIZE):
-            batch = records_to_insert_or_update[i:i+BATCH_INSERT_SIZE]
+        for i in range(0, len(records_to_insert), BATCH_INSERT_SIZE):
+            batch = records_to_insert[i:i+BATCH_INSERT_SIZE]
             try:
                 insert_query = supabase.table("history").insert(batch).execute
                 await asyncio.to_thread(insert_query)
@@ -251,7 +260,7 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
             except Exception as e:
                 logger.error(f"History Upload: Error uploading batch {i//BATCH_INSERT_SIZE+1}: {e}")
         
-        return records_to_insert_or_update
+        return records_to_insert
 
     except Exception as e:
         logger.exception(f"An unhandled error occurred during Supabase upload logic: {e}")
@@ -259,7 +268,6 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
 
 # --- Telegram Notification Logic ---
 def format_change_message(change_info: Dict[str, Any]) -> str:
-    """Formats a premium, Egyptian-style message for a detected price change."""
     curr_record = change_info['current']
     prev_record = change_info['previous']
     
@@ -289,7 +297,7 @@ def format_change_message(change_info: Dict[str, Any]) -> str:
                 change_percentage = ((old_p - new_p) / old_p) * 100 if old_p > 0 else float('inf')
                 price_line = (f"⬇️ **السعر قل:** من {old_price_str} إلى **{new_price_str}** جنيه\n"
                               f"   نسبة النقص: `-{change_percentage:.2f}%`")
-            else:
+            else: # Prices are the same, this block should ideally not be hit for notifications.
                 price_line = f"🔄 **السعر ثابت:** {new_price_str} جنيه"
         else:
             price_line = f"🔄 **السعر اتغير:** من {old_price_str} إلى **{new_price_str}** جنيه"
@@ -326,14 +334,13 @@ async def send_telegram_message(message: str, client: Optional[TelegramClient]):
         logger.warning("TARGET_CHANNEL not set.")
         return
     try:
-        # Ensure target_channel is an integer if it's a numeric string
         target_channel = int(target_channel_str) if target_channel_str.lstrip('-').isdigit() else target_channel_str
         await client.send_message(target_channel, message, parse_mode='md')
         logger.info(f"Notification sent to channel {target_channel}.")
     except FloodWaitError as e:
         logger.warning(f"Telegram flood wait error: {e}. Retrying in {e.seconds}s.")
         await asyncio.sleep(e.seconds)
-        await send_telegram_message(message, client) # Retry the same message
+        await send_telegram_message(message, client)
     except Exception as e:
         logger.error(f"Failed to send Telegram message: {e}")
 
@@ -374,7 +381,7 @@ async def compare_and_notify_changes(changed_records: List[Dict[str, Any]], tele
                 message = format_change_message({'previous': prev_record, 'current': curr_record})
                 await send_telegram_message(message, telegram_client)
                 notifications_sent += 1
-                await asyncio.sleep(1) # Sleep to avoid hitting Telegram rate limits
+                await asyncio.sleep(1)
 
         logger.info(f"Finished notification check. Sent {notifications_sent} notifications.")
     except Exception as e:
@@ -402,7 +409,6 @@ async def main():
         api_id_str, api_hash, bot_token = os.environ.get("API_ID"), os.environ.get("API_HASH"), os.environ.get("BOT_TOKEN")
         if all([api_id_str, api_hash, bot_token]):
             api_id = int(api_id_str)
-            # Use a unique session name to avoid conflicts with the bot's session
             telegram_client_instance = TelegramClient('scraper_session', api_id, api_hash)
             await telegram_client_instance.start(bot_token=bot_token)
             if await telegram_client_instance.is_user_authorized():
@@ -419,7 +425,6 @@ async def main():
 
     if not API_URL:
         logger.error("API_URL is not set. Cannot fetch drug data.")
-        # Cleanly disconnect if telegram client was started
         if telegram_client_instance and telegram_client_instance.is_connected():
             await telegram_client_instance.disconnect()
         return
