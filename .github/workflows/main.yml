@@ -50,5 +50,6 @@ jobs:
           TARGET_CHANNEL: ${{ secrets.TARGET_CHANNEL }}
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
         run: |
           python Connection.py
