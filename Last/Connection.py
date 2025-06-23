@@ -392,12 +392,12 @@ async def main():
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     try:
         async with aiohttp.ClientSession() as session:
-            # We assume fetch_drug_data_for_query is correctly defined elsewhere
-            # tasks = [fetch_drug_data_for_query(session, f"{c1}{c2}", semaphore) for c1 in string.ascii_lowercase for c2 in string.ascii_lowercase]
-            # results = await asyncio.gather(*tasks)
-            # for _, drugs_from_batch in results:
-            #     if drugs_from_batch: all_raw_drugs.extend(drugs_from_batch)
-            pass # Placeholder for fetching logic
+             We assume fetch_drug_data_for_query is correctly defined elsewhere
+             tasks = [fetch_drug_data_for_query(session, f"{c1}{c2}", semaphore) for c1 in string.ascii_lowercase for c2 in string.ascii_lowercase]
+             results = await asyncio.gather(*tasks)
+             for _, drugs_from_batch in results:
+                 if drugs_from_batch: all_raw_drugs.extend(drugs_from_batch)
+            #pass # Placeholder for fetching logic
 
         logger.info(f"Finished fetching data from API. Found {len(all_raw_drugs)} raw records.")
         if all_raw_drugs:
