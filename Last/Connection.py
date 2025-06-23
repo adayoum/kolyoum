@@ -171,7 +171,7 @@ async def fetch_drug_data_for_query(
     logger.error(f"API '{search_query}': All {MAX_RETRIES} retries failed.")
     return search_query, []
 
-# --- Supabase Upload Logic ---
+# --- Supabase Upload Logic (FINAL REVISED LOGIC) ---
 async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not supabase:
         logger.warning("Supabase client not initialized. Skipping upload.")
@@ -207,28 +207,41 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
             if not drug_id: continue
 
             last_db_record = last_row_by_id.get(drug_id)
-            api_update_date_str = drug_data.get('Last Price Update Date')
-
+            
+            # Case 1: The drug is completely new. Always insert.
             if not last_db_record:
                 logger.info(f"New drug detected: ID {drug_id}. Adding to history.")
                 records_to_insert.append(drug_data)
                 continue
 
+            # --- HYBRID LOGIC STARTS HERE ---
+            api_update_date_str = drug_data.get('Last Price Update Date')
             db_update_date_str = last_db_record.get('last_price_update_date')
-            if not api_update_date_str:
+
+            # First check: If API date is newer, it's a definite change.
+            if api_update_date_str and db_update_date_str and api_update_date_str > db_update_date_str:
+                logger.info(f"Genuine change for ID {drug_id} detected by newer update date.")
+                records_to_insert.append(drug_data)
                 continue
 
-            if db_update_date_str and api_update_date_str <= db_update_date_str:
-                continue
+            # Second check (Fallback): If dates are same or missing, compare all values.
+            # This is crucial for catching manual edits or API updates without a date change.
+            has_changed = any(
+                are_values_different(drug_data.get(map_key), last_db_record.get(db_key))
+                for map_key, db_key in DB_FIELD_MAPPING.items() if map_key != 'ID'
+            )
+
+            if has_changed:
+                logger.info(f"Change for ID {drug_id} detected by value comparison (manual edit or same date).")
+                records_to_insert.append(drug_data)
             
-            logger.info(f"Genuine change detected for ID {drug_id} based on update date. API: {api_update_date_str}, DB: {db_update_date_str}")
-            records_to_insert.append(drug_data)
+            # If dates are not newer AND values are identical, do nothing.
 
         if not records_to_insert:
-            logger.info("History Upload: No new or genuinely changed records detected.")
+            logger.info("History Upload: No new or changed records detected. All data is up-to-date.")
             return []
 
-        logger.info(f"History Upload: Found {len(records_to_insert)} new or genuinely changed records to upload.")
+        logger.info(f"History Upload: Found {len(records_to_insert)} new or changed records to upload.")
         
         supabase_records = []
         for record in records_to_insert:
