@@ -17,8 +17,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Configuration ---
-# NOTE: For faster performance, you can tune these values in your .env file.
-# A higher MAX_CONCURRENT_REQUESTS will be faster but risks more errors if the API is sensitive.
 API_URL: Optional[str] = os.environ.get("API_URL")
 DEFAULT_HEADERS: Dict[str, str] = {
     "User-Agent": str(os.environ.get("USER_AGENT", "Mozilla/5.0")),
@@ -28,7 +26,7 @@ DEFAULT_HEADERS: Dict[str, str] = {
 REQUEST_TIMEOUT_SECONDS: int = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", 30))
 MAX_RETRIES: int = int(os.environ.get("MAX_RETRIES", 5))
 RETRY_DELAY_SECONDS: int = int(os.environ.get("RETRY_DELAY_SECONDS", 2))
-MAX_CONCURRENT_REQUESTS: int = int(os.environ.get("MAX_CONCURRENT_REQUESTS", 10)) # Increased for speed
+MAX_CONCURRENT_REQUESTS: int = int(os.environ.get("MAX_CONCURRENT_REQUESTS", 10))
 
 SUPABASE_URL: Optional[str] = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY: Optional[str] = os.environ.get("SUPABASE_KEY")
@@ -45,18 +43,6 @@ if not logger.handlers:
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-# --- Supabase Key Check ---
-def log_supabase_key_type(key: Optional[str]):
-    if not key:
-        logger.warning("SUPABASE_KEY is empty! Check your .env file.")
-        return
-    if key.startswith("eyJ") and len(key) > 60:
-        logger.info("Supabase key format looks like a JWT. Ensure you are using the 'service_role' key.")
-    else:
-        logger.warning("Supabase key format is unusual. Double-check the service_role key.")
-
-log_supabase_key_type(SUPABASE_KEY)
-
 # Initialize Supabase client
 supabase: Optional[Client] = None
 if SUPABASE_URL and SUPABASE_KEY:
@@ -68,25 +54,55 @@ if SUPABASE_URL and SUPABASE_KEY:
 else:
     logger.error("SUPABASE_URL or SUPABASE_KEY not found. Supabase functionality will be disabled.")
 
-# --- Helper Functions ---
-def are_values_different(val1: Any, val2: Any) -> bool:
-    v1_is_empty = val1 is None or (isinstance(val1, str) and not val1.strip())
-    v2_is_empty = val2 is None or (isinstance(val2, str) and not val2.strip())
-    if v1_is_empty and v2_is_empty: return False
-    if v1_is_empty or v2_is_empty: return True
-    try:
-        return Decimal(str(val1)) != Decimal(str(val2))
-    except (InvalidOperation, TypeError, ValueError):
-        return str(val1).strip() != str(val2).strip()
+# --- Helper Functions (FINAL ROBUST VERSION) ---
 
-def to_float_or_none(value: Any) -> Optional[float]:
-    if value is None or (isinstance(value, str) and value.strip() == ''): return None
+def to_decimal_or_none(value: Any) -> Optional[Decimal]:
+    """
+    Safely converts any value to a Decimal object for consistent comparison.
+    Returns None if conversion is impossible.
+    """
+    if value is None:
+        return None
     try:
-        return float(Decimal(str(value)))
-    except (ValueError, TypeError, InvalidOperation):
+        # Convert to string first to handle all input types (int, float, str) uniformly
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
         return None
 
+def are_values_different(val1: Any, val2: Any) -> bool:
+    """
+    Robustly compares two values by converting them to a consistent type.
+    This function is critical for accurately detecting changes.
+    """
+    # Attempt to compare as numbers first, which is the most common case for prices.
+    dec1 = to_decimal_or_none(val1)
+    dec2 = to_decimal_or_none(val2)
+
+    # If both values can be reliably converted to decimals, compare them.
+    if dec1 is not None and dec2 is not None:
+        return dec1 != dec2
+
+    # If one is a number and the other is not (e.g., comparing a price '15.0' to a name 'Panadol'),
+    # they are considered different.
+    if (dec1 is not None and dec2 is None) or (dec1 is None and dec2 is not None):
+        return True
+
+    # Fallback for non-numeric values (e.g., names, descriptions).
+    # Coalesce None to an empty string to prevent errors and handle comparisons gracefully.
+    str1 = str(val1 or "").strip()
+    str2 = str(val2 or "").strip()
+    
+    return str1 != str2
+
+def to_float_or_none(value: Any) -> Optional[float]:
+    """Converts a value to float for database insertion, using Decimal for precision."""
+    dec_val = to_decimal_or_none(value)
+    if dec_val is None:
+        return None
+    return float(dec_val)
+    
 def safe_convert_timestamp(ts_str: Optional[str]) -> Optional[str]:
+    """Converts a millisecond Unix timestamp string to an ISO 8601 UTC string."""
     if not ts_str or not str(ts_str).isdigit() or int(ts_str) == 0:
         return None
     try:
@@ -98,23 +114,8 @@ def safe_convert_timestamp(ts_str: Optional[str]) -> Optional[str]:
         return None
 
 # --- Data Mapping ---
-DB_FIELD_MAPPING = {
-    'ID': 'id',
-    'Commercial Name (English)': 'commercial_name_en',
-    'Commercial Name (Arabic)': 'commercial_name_ar',
-    'Scientific Name/Active Ingredients': 'active_ingredients',
-    'Manufacturer': 'manufacturer',
-    'Current Price': 'current_price',
-    'Previous Price': 'previous_price',
-    'Last Price Update Date': 'last_price_update_date',
-    'Units': 'units',
-    'Barcode': 'barcode',
-    'Dosage Form': 'dosage_form',
-    'Uses (Arabic)': 'uses_ar',
-    'Image URL': 'image_url',
-}
-
 def map_api_record_to_internal(api_record: dict) -> Optional[Dict[str, Any]]:
+    """Maps a raw API dictionary to a cleaned, standardized internal format."""
     if not api_record or not api_record.get('id'):
         return None
     return {
@@ -132,6 +133,22 @@ def map_api_record_to_internal(api_record: dict) -> Optional[Dict[str, Any]]:
         'Uses (Arabic)': api_record.get('uses'),
         'Image URL': api_record.get('img'),
     }
+
+DB_FIELD_MAPPING = {
+    'ID': 'id',
+    'Commercial Name (English)': 'commercial_name_en',
+    'Commercial Name (Arabic)': 'commercial_name_ar',
+    'Scientific Name/Active Ingredients': 'active_ingredients',
+    'Manufacturer': 'manufacturer',
+    'Current Price': 'current_price',
+    'Previous Price': 'previous_price',
+    'Last Price Update Date': 'last_price_update_date',
+    'Units': 'units',
+    'Barcode': 'barcode',
+    'Dosage Form': 'dosage_form',
+    'Uses (Arabic)': 'uses_ar',
+    'Image URL': 'image_url',
+}
 
 # --- API Fetching Logic ---
 async def fetch_drug_data_for_query(
@@ -208,19 +225,24 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
             last_db_record = last_row_by_id.get(drug_id)
             
             if not last_db_record:
+                logger.info(f"Drug ID {drug_id}: New drug. Adding to insert list.")
                 records_to_insert.append(drug_data)
                 continue
 
-            has_changed = any(
-                are_values_different(drug_data.get(map_key), last_db_record.get(db_key))
-                for map_key, db_key in DB_FIELD_MAPPING.items() if db_key != 'id'
-            )
+            has_changed = False
+            for map_key, db_key in DB_FIELD_MAPPING.items():
+                api_val = drug_data.get(map_key)
+                db_val = last_db_record.get(db_key)
+                if are_values_different(api_val, db_val):
+                    logger.info(f"Drug ID {drug_id}: Change detected in '{map_key}'. DB value: '{db_val}', API value: '{api_val}'.")
+                    has_changed = True
+                    break
 
             if has_changed:
                 records_to_insert.append(drug_data)
         
         if not records_to_insert:
-            logger.info("History Upload: No new or changed records detected.")
+            logger.info("History Upload: No new or changed records detected. All data is up-to-date.")
             return []
 
         logger.info(f"History Upload: Found {len(records_to_insert)} new/changed records to upload.")
@@ -365,17 +387,26 @@ async def main():
     if all([api_id_str, api_hash, bot_token]):
         try:
             api_id = int(api_id_str)
-            # IMPORTANT: For faster startups and to avoid FloodWaitError, Telethon creates a
-            # 'scraper_session.session' file. DO NOT DELETE THIS FILE between runs.
-            # In CI/CD environments, ensure this file is cached and restored.
             telegram_client_instance = TelegramClient('scraper_session', api_id, api_hash, sequential_updates=True)
             logger.info("Starting Telegram client...")
-            await telegram_client_instance.start(bot_token=bot_token)
+            
+            for attempt in range(3):
+                try:
+                    await telegram_client_instance.start(bot_token=bot_token)
+                    break
+                except FloodWaitError as e:
+                    if e.seconds > 120:
+                        logger.error(f"Telegram FloodWait is too long ({e.seconds}s). Disabling notifications for this run.")
+                        raise
+                    logger.warning(f"Telegram FloodWait of {e.seconds}s detected. Waiting... (Attempt {attempt + 1}/3)")
+                    await asyncio.sleep(e.seconds + 5)
+            
             if not await telegram_client_instance.is_user_authorized():
-                 raise Exception("Telegram authorization failed.")
+                 raise Exception("Telegram authorization failed after attempts.")
             logger.info("Telegram client started and authorized successfully.")
+
         except Exception as e:
-            logger.error(f"Failed to start Telegram client: {e}. Notifications disabled.", exc_info=True)
+            logger.error(f"Failed to start Telegram client: {type(e).__name__}: {e}. Notifications disabled.")
             if telegram_client_instance and telegram_client_instance.is_connected():
                 await telegram_client_instance.disconnect()
             telegram_client_instance = None
@@ -395,9 +426,6 @@ async def main():
             for query in search_queries:
                 task = fetch_drug_data_for_query(session, query, semaphore)
                 tasks.append(task)
-                # SPEED-UP TWEAK: Add a tiny delay between launching tasks.
-                # This prevents sending a massive burst of requests at the exact same moment,
-                # making the script more stable and less likely to be rate-limited by the API.
                 await asyncio.sleep(0.05) 
             
             logger.info(f"Launching {len(tasks)} tasks to fetch data with a concurrency of {MAX_CONCURRENT_REQUESTS}...")
