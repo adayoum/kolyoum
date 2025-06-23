@@ -1,13 +1,16 @@
 name: DrugShift Bot Scheduled Run
 
 on:
+  # التشغيل اليدوي من تبويب Actions في GitHub
   workflow_dispatch:
+
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     defaults:
       run:
+        # مهم جداً: كل الأوامر ستعمل داخل مجلد Last
         working-directory: Last
     permissions:
       contents: read
@@ -21,8 +24,21 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: List files for debug
-        run: ls -l
+      # --- الخطوة الجديدة والأكثر أهمية ---
+      # تقوم هذه الخطوة بحفظ ملف الجلسة بعد انتهاء التشغيل واستعادته في بداية التشغيل التالي
+      - name: Cache Telethon session file
+        uses: actions/cache@v4
+        id: telethon-cache
+        with:
+          # المسار الصحيح للملف بناءً على working-directory
+          path: scraper_session.session
+          # مفتاح فريد للتخزين. سيتم استعادة آخر نسخة متطابقة
+          key: ${{ runner.os }}-telethon-session-v1
+          restore-keys: |
+            ${{ runner.os }}-telethon-session-v1
+
+      - name: List files for debug (after cache restore)
+        run: ls -la
 
       - name: Install dependencies
         run: |
@@ -31,6 +47,7 @@ jobs:
 
       - name: Run DrugShift Bot
         env:
+          # تم الاحتفاظ بجميع متغيرات البيئة الخاصة بك كما هي
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           API_URL: ${{ secrets.API_URL }}
           USER_AGENT: ${{ secrets.USER_AGENT }}
