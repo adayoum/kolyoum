@@ -348,6 +348,7 @@ async def compare_and_notify_changes(changed_records: List[Dict[str, Any]], tele
     if not changed_ids: return
 
     try:
+        # Assumes a corrected `get_penultimate_drug_history` function exists in the DB
         rpc_query = supabase.rpc("get_penultimate_drug_history", {"p_ids": changed_ids}).execute
         rpc_response = await asyncio.to_thread(rpc_query)
 
@@ -377,7 +378,7 @@ async def compare_and_notify_changes(changed_records: List[Dict[str, Any]], tele
     except Exception as e:
         logger.exception(f"Error during notification checks: {e}")
 
-# --- Main Execution (with FloodWaitError handling) ---
+# --- Main Execution ---
 async def main():
     script_start_time = datetime.datetime.now(datetime.timezone.utc)
     logger.info(f"Script starting at {script_start_time.isoformat()}...")
@@ -395,8 +396,6 @@ async def main():
                     if await telegram_client_instance.is_user_authorized():
                         logger.info("Telegram client started and authorized successfully.")
                         break
-                    else:
-                        logger.error(f"Telegram client failed to authorize on attempt {i+1}.")
                 except FloodWaitError as e:
                     logger.warning(f"Telegram flood wait on startup: Must wait {e.seconds}s. Attempt {i+1}/3.")
                     if i < 2:
@@ -404,8 +403,8 @@ async def main():
                     else:
                         raise
             
-            if not telegram_client_instance.is_connected():
-                 logger.error("Could not establish Telegram connection after retries. Notifications disabled.")
+            if not telegram_client_instance or not telegram_client_instance.is_connected():
+                 logger.error("Could not establish Telegram connection. Notifications disabled.")
                  telegram_client_instance = None
         else:
             logger.warning("Telegram credentials not fully set. Notifications disabled.")
