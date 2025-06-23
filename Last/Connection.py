@@ -101,12 +101,10 @@ def safe_convert_timestamp(ts_str: Optional[str]) -> Optional[str]:
         logger.warning(f"Could not convert timestamp string: {ts_str}")
         return None
 
-# --- Data Mapping (UPDATED) ---
+# --- Data Mapping ---
 def map_api_record_to_internal(api_record: dict) -> Optional[Dict[str, Any]]:
-    """Maps the raw API record to a structured internal dictionary."""
     if not api_record or not api_record.get('id'):
         return None
-    
     return {
         'ID': api_record.get('id'),
         'Commercial Name (English)': api_record.get('name'),
@@ -123,7 +121,6 @@ def map_api_record_to_internal(api_record: dict) -> Optional[Dict[str, Any]]:
         'Image URL': api_record.get('img'),
     }
 
-# Defines which fields from our internal format get written to which DB columns.
 DB_FIELD_MAPPING = {
     'ID': 'id',
     'Commercial Name (English)': 'commercial_name_en',
@@ -133,21 +130,48 @@ DB_FIELD_MAPPING = {
     'Last Price Update Date': 'last_price_update_date',
     'Barcode': 'barcode',
     'Dosage Form': 'dosage_form',
-    # Note: To store more fields, you must first create the columns in your Supabase 'history' table.
 }
 
-# --- API Fetching Logic (Unchanged) ---
+# --- API Fetching Logic ---
 async def fetch_drug_data_for_query(
     session: aiohttp.ClientSession,
     search_query: str,
     semaphore: asyncio.Semaphore
 ) -> Tuple[str, List[Dict[str, Any]]]:
-    # This function remains the same as before.
     payload = {"search": "1", "searchq": search_query, "order_by": "name ASC", "page": "1"}
-    # ... (rest of the function is unchanged)
-    return search_query, [] # Placeholder for brevity
+    for attempt in range(MAX_RETRIES):
+        try:
+            async with semaphore:
+                async with session.post(API_URL, data=payload, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+                    response.raise_for_status()
+                    try:
+                        data = await response.json(content_type=None)
+                    except aiohttp.ContentTypeError:
+                        logger.warning(f"API '{search_query}': Unexpected content type. Response text: {await response.text()[:200]}...")
+                        return search_query, []
 
-# --- Supabase Upload Logic (REVISED with NEW LOGIC) ---
+                    drug_list = data.get('data', [])
+                    if not isinstance(drug_list, list):
+                        logger.warning(f"API '{search_query}': 'data' field is not a list. Found: {type(drug_list)}. Response: {str(data)[:200]}...")
+                        return search_query, []
+
+                    count = len(drug_list)
+                    logger.info(f"API '{search_query}': {count} results returned.")
+                    return search_query, drug_list
+        except (aiohttp.ClientError, asyncio.TimeoutError, aiohttp.ServerDisconnectedError) as e:
+            wait_time = RETRY_DELAY_SECONDS * (2 ** attempt)
+            logger.warning(f"API '{search_query}': Request failed ({type(e).__name__}) on attempt {attempt+1}/{MAX_RETRIES}. Retrying in {wait_time}s...")
+            await asyncio.sleep(wait_time)
+        except Exception as e:
+            logger.error(f"API '{search_query}': Unexpected error on attempt {attempt+1}/{MAX_RETRIES} - {type(e).__name__}: {e}")
+            if attempt == MAX_RETRIES - 1:
+                logger.error(f"API '{search_query}': All retries failed after unexpected error: {e}")
+                return search_query, []
+            await asyncio.sleep(RETRY_DELAY_SECONDS)
+    logger.error(f"API '{search_query}': All {MAX_RETRIES} retries failed.")
+    return search_query, []
+
+# --- Supabase Upload Logic ---
 async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not supabase:
         logger.warning("Supabase client not initialized. Skipping upload.")
@@ -166,7 +190,6 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
         for i in range(0, len(all_ids_to_check), BATCH_RPC_SIZE):
             batch_ids = all_ids_to_check[i:i + BATCH_RPC_SIZE]
             try:
-                # This RPC function should be optimized and have an index on (id, data DESC)
                 rpc_query = supabase.rpc("get_latest_record_for_ids", {"p_ids": batch_ids}).execute
                 resp = await asyncio.to_thread(rpc_query)
                 if resp.data:
@@ -186,23 +209,18 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
             last_db_record = last_row_by_id.get(drug_id)
             api_update_date_str = drug_data.get('Last Price Update Date')
 
-            # **NEW CORE LOGIC**
             if not last_db_record:
                 logger.info(f"New drug detected: ID {drug_id}. Adding to history.")
                 records_to_insert.append(drug_data)
                 continue
 
             db_update_date_str = last_db_record.get('last_price_update_date')
-
             if not api_update_date_str:
                 continue
 
             if db_update_date_str and api_update_date_str <= db_update_date_str:
-                # The API data is not newer than what we have. Ignore to prevent false positives.
                 continue
             
-            # If we reach here, it's either because the DB date is missing,
-            # or the API date is genuinely newer. This is a real change.
             logger.info(f"Genuine change detected for ID {drug_id} based on update date. API: {api_update_date_str}, DB: {db_update_date_str}")
             records_to_insert.append(drug_data)
 
@@ -235,7 +253,7 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
         logger.exception(f"An unhandled error occurred during Supabase upload logic: {e}")
         return []
 
-# --- Telegram Notification Logic (UPDATED) ---
+# --- Telegram Notification Logic ---
 def format_change_message(change_info: Dict[str, Any]) -> str:
     curr_record = change_info['current']
     prev_record = change_info['previous']
@@ -268,19 +286,15 @@ def format_change_message(change_info: Dict[str, Any]) -> str:
                 price_line = (f"⬇️ **السعر قل:** من {old_price_str} إلى **{new_price_str}** جنيه\n"
                               f"   نسبة النقص: `-{change_percentage:.2f}%`")
             else:
-                price_line = f"🔄 **السعر ثابت:** {new_price_str} جنيه" # Should not happen if logic is correct
+                price_line = f"🔄 **السعر ثابت:** {new_price_str} جنيه"
         else:
             price_line = f"🔄 **السعر اتغير:** من {old_price_str} إلى **{new_price_str}** جنيه"
             
     except (ValueError, TypeError, InvalidOperation):
         price_line = f"🔄 **السعر اتغير:** من {old_price_str} إلى **{new_price_str}** جنيه"
 
-    try:
-        # Use current time for notification timestamp
-        cairo_tz = datetime.timezone(datetime.timedelta(hours=3))
-        timestamp = datetime.datetime.now(cairo_tz).strftime('%Y-%m-%d الساعة %I:%M %p')
-    except (TypeError, ValueError):
-        timestamp = "غير محدد"
+    cairo_tz = datetime.timezone(datetime.timedelta(hours=3))
+    timestamp = datetime.datetime.now(cairo_tz).strftime('%Y-%m-%d الساعة %I:%M %p')
         
     return (
         f"{header}\n\n"
@@ -318,7 +332,7 @@ async def compare_and_notify_changes(changed_records: List[Dict[str, Any]], tele
     if not changed_records:
         logger.info("No changed records to notify about.")
         return
-    if not telegram_client:
+    if not telegram_client or not telegram_client.is_connected():
         logger.warning("Telegram client not ready. Skipping notification check.")
         return
 
@@ -328,7 +342,6 @@ async def compare_and_notify_changes(changed_records: List[Dict[str, Any]], tele
     if not changed_ids: return
 
     try:
-        # This RPC function gets the record right BEFORE the one we just inserted.
         rpc_query = supabase.rpc("get_penultimate_drug_history", {"p_ids": changed_ids}).execute
         rpc_response = await asyncio.to_thread(rpc_query)
 
@@ -392,15 +405,15 @@ async def main():
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     try:
         async with aiohttp.ClientSession() as session:
-             We assume fetch_drug_data_for_query is correctly defined elsewhere
-             tasks = [fetch_drug_data_for_query(session, f"{c1}{c2}", semaphore) for c1 in string.ascii_lowercase for c2 in string.ascii_lowercase]
-             results = await asyncio.gather(*tasks)
-             for _, drugs_from_batch in results:
-                 if drugs_from_batch: all_raw_drugs.extend(drugs_from_batch)
-            #pass # Placeholder for fetching logic
+            tasks = [fetch_drug_data_for_query(session, f"{c1}{c2}", semaphore) for c1 in string.ascii_lowercase for c2 in string.ascii_lowercase]
+            results = await asyncio.gather(*tasks)
+            for _, drugs_from_batch in results:
+                if drugs_from_batch: all_raw_drugs.extend(drugs_from_batch)
 
         logger.info(f"Finished fetching data from API. Found {len(all_raw_drugs)} raw records.")
         if all_raw_drugs:
+            logger.info(f"Sample raw drug record: {all_raw_drugs[0] if all_raw_drugs else 'N/A'}")
+            
             mapped_drugs = [map_api_record_to_internal(d) for d in all_raw_drugs if d]
             valid_mapped_drugs = [d for d in mapped_drugs if d]
             
@@ -425,6 +438,13 @@ async def main():
         logger.info("Script finished execution.")
 
 if __name__ == "__main__":
-    # To re-enable fetching, uncomment the lines inside the main try-except block
-    # For now, this is set up to just run the structure without fetching.
-    print("Please re-enable the fetching logic inside main() to run the full script.")
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    start_time = time.time()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Script interrupted by user.")
+    finally:
+        end_time = time.time()
+        logger.info(f"Script completed in {end_time - start_time:.2f} seconds.")
