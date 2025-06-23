@@ -208,24 +208,19 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
 
             last_db_record = last_row_by_id.get(drug_id)
             
-            # Case 1: The drug is completely new. Always insert.
             if not last_db_record:
                 logger.info(f"New drug detected: ID {drug_id}. Adding to history.")
                 records_to_insert.append(drug_data)
                 continue
 
-            # --- HYBRID LOGIC STARTS HERE ---
             api_update_date_str = drug_data.get('Last Price Update Date')
             db_update_date_str = last_db_record.get('last_price_update_date')
 
-            # First check: If API date is newer, it's a definite change.
             if api_update_date_str and db_update_date_str and api_update_date_str > db_update_date_str:
                 logger.info(f"Genuine change for ID {drug_id} detected by newer update date.")
                 records_to_insert.append(drug_data)
                 continue
 
-            # Second check (Fallback): If dates are same or missing, compare all values.
-            # This is crucial for catching manual edits or API updates without a date change.
             has_changed = any(
                 are_values_different(drug_data.get(map_key), last_db_record.get(db_key))
                 for map_key, db_key in DB_FIELD_MAPPING.items() if map_key != 'ID'
@@ -235,8 +230,6 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
                 logger.info(f"Change for ID {drug_id} detected by value comparison (manual edit or same date).")
                 records_to_insert.append(drug_data)
             
-            # If dates are not newer AND values are identical, do nothing.
-
         if not records_to_insert:
             logger.info("History Upload: No new or changed records detected. All data is up-to-date.")
             return []
@@ -384,7 +377,7 @@ async def compare_and_notify_changes(changed_records: List[Dict[str, Any]], tele
     except Exception as e:
         logger.exception(f"Error during notification checks: {e}")
 
-# --- Main Execution ---
+# --- Main Execution (with FloodWaitError handling) ---
 async def main():
     script_start_time = datetime.datetime.now(datetime.timezone.utc)
     logger.info(f"Script starting at {script_start_time.isoformat()}...")
@@ -395,17 +388,31 @@ async def main():
         if all([api_id_str, api_hash, bot_token]):
             api_id = int(api_id_str)
             telegram_client_instance = TelegramClient('scraper_session', api_id, api_hash)
-            await telegram_client_instance.start(bot_token=bot_token)
-            if await telegram_client_instance.is_user_authorized():
-                logger.info("Telegram client started and authorized successfully.")
-            else:
-                logger.error("Telegram client failed to authorize.")
-                await telegram_client_instance.disconnect()
-                telegram_client_instance = None
+            
+            for i in range(3):
+                try:
+                    await telegram_client_instance.start(bot_token=bot_token)
+                    if await telegram_client_instance.is_user_authorized():
+                        logger.info("Telegram client started and authorized successfully.")
+                        break
+                    else:
+                        logger.error(f"Telegram client failed to authorize on attempt {i+1}.")
+                except FloodWaitError as e:
+                    logger.warning(f"Telegram flood wait on startup: Must wait {e.seconds}s. Attempt {i+1}/3.")
+                    if i < 2:
+                        await asyncio.sleep(e.seconds + 5)
+                    else:
+                        raise
+            
+            if not telegram_client_instance.is_connected():
+                 logger.error("Could not establish Telegram connection after retries. Notifications disabled.")
+                 telegram_client_instance = None
         else:
             logger.warning("Telegram credentials not fully set. Notifications disabled.")
     except Exception as e:
         logger.error(f"Failed to start Telegram client: {e}. Notifications disabled.")
+        if telegram_client_instance and telegram_client_instance.is_connected():
+            await telegram_client_instance.disconnect()
         telegram_client_instance = None
 
     if not API_URL:
