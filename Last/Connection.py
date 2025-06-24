@@ -54,7 +54,7 @@ if SUPABASE_URL and SUPABASE_KEY:
 else:
     logger.error("SUPABASE_URL or SUPABASE_KEY not found. Supabase functionality will be disabled.")
 
-# --- Helper Functions (FINAL, ROBUST VERSION) ---
+# --- Helper Functions (FINAL ROBUST VERSION) ---
 
 def to_decimal_or_none(value: Any) -> Optional[Decimal]:
     """Safely converts any value to a Decimal object for consistent comparison."""
@@ -70,46 +70,34 @@ def parse_iso_datetime(ts_str: Any) -> Optional[datetime.datetime]:
     if not isinstance(ts_str, str):
         return None
     try:
-        # The replace part handles the 'Z' (Zulu time) format and standard ISO format
         return datetime.datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
     except (ValueError, TypeError):
         return None
 
 def are_values_different(val1: Any, val2: Any) -> bool:
-    """
-    Robustly compares two values by checking their type and content.
-    1. Handles None values.
-    2. Compares numbers using Decimal for precision.
-    3. Compares ISO date strings by parsing them into datetime objects to handle precision differences.
-    4. Falls back to string comparison for everything else.
-    """
+    """Robustly compares two values by checking their type and content."""
     if val1 is None and val2 is None:
         return False
     if val1 is None or val2 is None:
         return True
 
-    # Attempt numeric comparison first
     dec1 = to_decimal_or_none(val1)
     dec2 = to_decimal_or_none(val2)
     if dec1 is not None and dec2 is not None:
         return dec1 != dec2
 
-    # Attempt datetime comparison for strings to handle precision differences
     dt1 = parse_iso_datetime(val1)
     dt2 = parse_iso_datetime(val2)
     if dt1 and dt2:
         return dt1 != dt2
 
-    # Fallback to string comparison
     return str(val1).strip() != str(val2).strip()
 
 def to_float_or_none(value: Any) -> Optional[float]:
-    """Converts a value to float for database insertion, using Decimal for precision."""
     dec_val = to_decimal_or_none(value)
     return float(dec_val) if dec_val is not None else None
     
 def safe_convert_timestamp(ts_str: Optional[str]) -> Optional[str]:
-    """Converts a millisecond Unix timestamp string to an ISO 8601 UTC string."""
     if not ts_str or not str(ts_str).isdigit() or int(ts_str) == 0:
         return None
     try:
@@ -174,7 +162,7 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
                         logger.warning(f"API '{search_query}': 'data' is not a list. Type: {type(drug_list)}.")
                         return search_query, []
                     
-                    logger.info(f"API '{search_query}': {len(drug_list)} results found.")
+                    # logger.info(f"API '{search_query}': {len(drug_list)} results found.")
                     return search_query, drug_list
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             wait_time = RETRY_DELAY_SECONDS * (2 ** attempt)
@@ -259,9 +247,6 @@ async def upload_to_history_async(drugs: List[Dict[str, Any]]) -> List[Dict[str,
         for i in range(0, len(supabase_records), BATCH_INSERT_SIZE):
             batch = supabase_records[i:i+BATCH_INSERT_SIZE]
             try:
-                # Assuming you have a `row_id` as primary key, otherwise `insert` is fine.
-                # Use `upsert` if you want to update rows in place based on a constraint (e.g., id).
-                # For a history table, `insert` is usually correct.
                 insert_query = supabase.table("history").insert(batch).execute
                 await asyncio.to_thread(insert_query)
                 logger.info(f"History Upload: Uploaded batch {i//BATCH_INSERT_SIZE+1} ({len(batch)} records).")
@@ -343,6 +328,7 @@ async def send_telegram_message(message: str, client: TelegramClient):
     except Exception as e:
         logger.error(f"Failed to send Telegram message: {e}", exc_info=True)
 
+# --- DEBUGGING VERSION OF THIS FUNCTION ---
 async def compare_and_notify_changes(changed_records: List[Dict[str, Any]], telegram_client: Optional[TelegramClient]):
     if not changed_records or not telegram_client or not telegram_client.is_connected():
         return
@@ -356,7 +342,7 @@ async def compare_and_notify_changes(changed_records: List[Dict[str, Any]], tele
         rpc_response = await asyncio.to_thread(rpc_query)
 
         if not hasattr(rpc_response, 'data') or not rpc_response.data:
-            logger.warning("Could not fetch previous history for changed records.")
+            logger.warning("Could not fetch previous history for changed records. This can happen if the changed records were newly added drugs.")
             return
 
         prev_history_by_id = {row['id']: row for row in rpc_response.data}
@@ -368,10 +354,23 @@ async def compare_and_notify_changes(changed_records: List[Dict[str, Any]], tele
 
             prev_record_db = prev_history_by_id.get(drug_id)
             if not prev_record_db:
+                logger.info(f"ID {drug_id}: No 'penultimate' record found. Likely a new drug or only has one history entry. Skipping notification.")
                 continue
 
-            if are_values_different(curr_record_map.get("Current Price"), prev_record_db.get("current_price")):
-                logger.info(f"Price change confirmed for ID {drug_id}: {prev_record_db.get('current_price')} -> {curr_record_map.get('Current Price')}")
+            # --- DEBUGGING LOGS START ---
+            logger.info(f"--- DEBUGGING NOTIFICATION FOR ID: {drug_id} ---")
+            api_price = curr_record_map.get("Current Price")
+            db_price = prev_record_db.get("current_price")
+            logger.info(f"Comparing NEW price from API record: '{api_price}' (Type: {type(api_price)})")
+            logger.info(f"With PREVIOUS price from DB record: '{db_price}' (Type: {type(db_price)})")
+            
+            prices_are_different = are_values_different(api_price, db_price)
+            logger.info(f"Result of are_values_different: {prices_are_different}")
+            logger.info(f"--- END DEBUGGING ---")
+            # --- DEBUGGING LOGS END ---
+            
+            if prices_are_different:
+                logger.info(f"Price change confirmed for ID {drug_id}: {db_price} -> {api_price}")
                 message = format_change_message({'previous': prev_record_db, 'current': curr_record_map})
                 await send_telegram_message(message, telegram_client)
                 notifications_sent += 1
@@ -380,6 +379,7 @@ async def compare_and_notify_changes(changed_records: List[Dict[str, Any]], tele
         logger.info(f"Finished notification check. Sent {notifications_sent} price change notifications.")
     except Exception as e:
         logger.exception(f"Error during notification checks: {e}")
+
 
 # --- Main Execution ---
 async def main():
