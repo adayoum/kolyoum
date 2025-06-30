@@ -97,7 +97,8 @@ def map_api_record_to_internal(api_record: dict) -> Optional[Dict[str, Any]]:
         'Scientific Name/Active Ingredients': api_record.get('active'),
         'Manufacturer': api_record.get('company'),
         'Current Price': to_float_or_none(api_record.get('price')),
-        'Previous Price': to_float_or_none(api_record.get('oldprice')),
+        # تجاهل oldprice من الـ API وعدم استخدامه في المقارنة أو التخزين
+        'Previous Price': None,  # لا نعتمد على oldprice من الـ API
         'Last Price Update Date': safe_convert_timestamp(api_record.get('Date_updated')),
         'Units': api_record.get('units'),
         'Barcode': api_record.get('barcode'),
@@ -212,10 +213,17 @@ async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_clien
             if not drug_id: continue
             last_db_record = last_row_by_id.get(drug_id)
             if not last_db_record:
+                # دواء جديد، أضفه بدون إشعار
                 records_to_commit.append({'api_data': drug_data, 'db_data': None, 'is_new': True})
                 continue
-            if any(are_values_different(drug_data.get(k), last_db_record.get(v)) for k, v in DB_FIELD_MAPPING.items()):
+            # المقارنة فقط بين السعر الحالي من الموقع وآخر سعر مخزن في قاعدة البيانات
+            api_price = drug_data.get("Current Price")
+            db_price = last_db_record.get("current_price")
+            if are_values_different(api_price, db_price):
+                logger.info(f"[COMPARE] Drug ID {drug_id}: API price = {api_price}, DB price = {db_price} -> DIFF detected")
                 records_to_commit.append({'api_data': drug_data, 'db_data': last_db_record, 'is_new': False})
+            else:
+                logger.info(f"[COMPARE] Drug ID {drug_id}: API price = {api_price}, DB price = {db_price} -> NO change")
         
         if not records_to_commit:
             logger.info("No changes detected. All data is up-to-date."); return
@@ -229,27 +237,30 @@ async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_clien
             drug_data = record['api_data']
             last_db_record = record['db_data']
             
-            # Non-price changes or new drugs are always safe to upload
-            if record['is_new'] or not are_values_different(drug_data.get("Current Price"), last_db_record.get("current_price")):
+            # إذا كان دواء جديد، أضفه بدون إشعار
+            if record['is_new']:
                 final_records_to_upload.append(drug_data)
                 continue
-            
-            # If we are here, it means the price has definitely changed
-            logger.info(f"Price change detected for ID {drug_data['ID']}. Attempting to send notification...")
-            
-            notification_sent = False
-            if telegram_client and telegram_client.is_connected():
-                message = format_change_message({'previous': last_db_record, 'current': drug_data})
-                notification_sent = await send_telegram_message(message, telegram_client)
+            # إذا تغير السعر فعلاً، أرسل إشعار
+            api_price = drug_data.get("Current Price")
+            db_price = last_db_record.get("current_price")
+            if are_values_different(api_price, db_price):
+                logger.info(f"[NOTIFY] Price change detected for ID {drug_data['ID']}: {db_price} -> {api_price}")
+                notification_sent = False
+                if telegram_client and telegram_client.is_connected():
+                    message = format_change_message({'previous': last_db_record, 'current': drug_data})
+                    notification_sent = await send_telegram_message(message, telegram_client)
+                else:
+                    logger.warning(f"Telegram client not available. Cannot send notification for ID {drug_data['ID']}.")
+                if notification_sent:
+                    logger.info(f"Notification for ID {drug_data['ID']} SUCCEEDED. Queuing for DB update.")
+                    final_records_to_upload.append(drug_data)
+                    notifications_sent += 1
+                else:
+                    logger.warning(f"Notification for ID {drug_data['ID']} FAILED. Skipping DB update for this run to retry later.")
             else:
-                logger.warning(f"Telegram client not available. Cannot send notification for ID {drug_data['ID']}.")
-
-            if notification_sent:
-                logger.info(f"Notification for ID {drug_data['ID']} SUCCEEDED. Queuing for DB update.")
-                final_records_to_upload.append(drug_data)
-                notifications_sent += 1
-            else:
-                logger.warning(f"Notification for ID {drug_data['ID']} FAILED. Skipping DB update for this run to retry later.")
+                # لا يوجد تغير في السعر، لا إشعار ولا تحديث
+                logger.info(f"[SKIP] No price change for ID {drug_data['ID']}.")
 
         logger.info(f"Processing complete. Total notifications sent: {notifications_sent}. Total records to upload: {len(final_records_to_upload)}.")
         
