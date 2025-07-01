@@ -98,8 +98,7 @@ def map_api_record_to_internal(api_record: dict) -> Optional[Dict[str, Any]]:
         'Scientific Name/Active Ingredients': api_record.get('active'),
         'Manufacturer': api_record.get('company'),
         'Current Price': to_float_or_none(api_record.get('price')),
-        # تجاهل oldprice من الـ API وعدم استخدامه في المقارنة أو التخزين
-        'Previous Price': None,  # لا نعتمد على oldprice من الـ API
+        'Previous Price': None,
         'Last Price Update Date': safe_convert_timestamp(api_record.get('Date_updated')),
         'Units': api_record.get('units'),
         'Barcode': api_record.get('barcode'),
@@ -138,137 +137,133 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
     return search_query, []
 
 # --- Telegram Notification Logic ---
-def format_change_message(change_info: Dict[str, Any]) -> str:
-    curr_record, prev_record = change_info['current'], change_info['previous']
-    name_ar = curr_record.get('Commercial Name (Arabic)', "اسم غير متوفر")
-    name_en = curr_record.get('Commercial Name (English)', "Name not available")
-    dosage_form = curr_record.get('Dosage Form', "غير محدد")
-    barcode = curr_record.get('Barcode', "لا يوجد")
-    old_price_val = prev_record.get('current_price')
-    new_price_val = curr_record.get('Current Price')
-    old_price_str = f"{old_price_val:g}" if old_price_val is not None else "N/A"
-    new_price_str = f"{new_price_val:g}" if new_price_val is not None else "N/A"
-    try:
-        if old_price_val and new_price_val:
-            old_p, new_p = Decimal(str(old_price_val)), Decimal(str(new_price_val))
-            percent = ((new_p - old_p) / old_p) * 100 if old_p > 0 else 0
-            percent_str = f"{percent:+.2f}%"
-        else:
-            percent_str = "N/A"
-    except Exception:
-        percent_str = "N/A"
-    cairo_tz = datetime.timezone(datetime.timedelta(hours=3))
-    timestamp = datetime.datetime.now(cairo_tz).strftime('%d-%m-%Y – %I:%M %p (بتوقيت القاهرة 🇪🇬)')
-    # رسالة منسقة بأسلوب تليجرام (HTML)
-    return (
-        "<b>💊 تحديث سعر دواء جديد</b>\n\n"
-        f"🧾 <b>الاسم التجاري:</b> {name_ar}\n"
-        f"💬 <b>الاسم الإنجليزي:</b> {name_en}\n"
-        f"💊 <b>الشكل الدوائي:</b> {dosage_form}\n"
-        f"🔢 <b>الباركود:</b> <code>{barcode}</code>\n\n"
-        "<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n"
-        f"📈 <b>السعر الجديد:</b> <span class='tg-spoiler'>{new_price_str} جنيه</span>\n"
-        f"📉 <b>السعر السابق:</b> {old_price_str} جنيه\n"
-        f"📊 <b>نسبة الزيادة:</b> <b>{percent_str}</b>\n"
-        "<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n"
-        f"🕒 <i>{timestamp}</i>"
-    )
 
-def create_notification_image(data, logo_path='background.png', output_path='notification.png'):
-    # حجم الصورة الجديد
+def create_notification_image(data: Dict[str, Any], logo_path: str = 'background.jpg', output_path: str = 'notification.png'):
+    """
+    Creates a professional notification image with Arabic support.
+
+    Args:
+        data: A dictionary containing the notification text data.
+        logo_path: Path to the background logo image.
+        output_path: Path to save the generated image.
+    """
     width, height = 800, 600
-    # فتح صورة الخلفية وتغيير حجمها
     try:
-        img = Image.open(logo_path).convert('RGBA').resize((width, height))
+        background = Image.open(logo_path).convert('RGBA')
+        # Resize while maintaining aspect ratio (optional, but good practice)
+        background.thumbnail((width, height))
+        bg_w, bg_h = background.size
+        # Create a new canvas and paste the background in the center
+        img = Image.new('RGBA', (width, height), (255, 255, 255, 255))
+        img.paste(background, ((width - bg_w) // 2, (height - bg_h) // 2))
+
     except Exception as e:
-        logger.error(f"Could not open background image: {e}")
-        img = Image.new('RGBA', (width, height), color='#fff')
-    draw = ImageDraw.Draw(img)
+        logger.error(f"Could not open background image at {logo_path}: {e}")
+        img = Image.new('RGBA', (width, height), (240, 240, 240, 255))
 
-    # محاولة استخدام خط عربي واضح
-    font_path_arabic = "Cairo.ttf"  # ضع الخط في نفس مجلد السكريبت
-    font_path_fallback = "NotoNaskhArabic-Regular.ttf"
-    font_path_tahoma = "tahoma.ttf"
-    font_path_bold = "arialbd.ttf"
-    font_path = "arial.ttf"
-    font_bold = font = None
-    try:
-        font_bold = ImageFont.truetype(font_path_arabic, 48)
-        font = ImageFont.truetype(font_path_arabic, 38)
-    except:
-        try:
-            font_bold = ImageFont.truetype(font_path_fallback, 48)
-            font = ImageFont.truetype(font_path_fallback, 38)
-        except:
-            try:
-                font_bold = ImageFont.truetype(font_path_tahoma, 48)
-                font = ImageFont.truetype(font_path_tahoma, 38)
-            except:
-                try:
-                    font_bold = ImageFont.truetype(font_path_bold, 48)
-                    font = ImageFont.truetype(font_path, 38)
-                except:
-                    font_bold = font = ImageFont.load_default()
-                    logger.warning("No Arabic font found. Text may not display correctly. Please add Cairo.ttf or NotoNaskhArabic-Regular.ttf to the script folder.")
-
-    # ألوان واضحة
-    color_title = (29, 53, 87)
-    color_label = (34, 34, 34)
-    color_value = (34, 34, 34)
-    color_price = (230, 57, 70)
-    color_percent = (230, 57, 70)
-    color_time = (120, 120, 120)
-
-    # خلفية شفافة للنص
-    rect_x0, rect_y0 = 40, 60
-    rect_x1, rect_y1 = width - 40, height - 40
-    overlay = Image.new('RGBA', img.size, (255,255,255,0))
-    overlay_draw = ImageDraw.Draw(overlay)
-    overlay_draw.rectangle([rect_x0, rect_y0, rect_x1, rect_y1], fill=(255,255,255,210), outline=(200,200,200,255), width=2)
+    # --- Create a semi-transparent overlay for text readability ---
+    overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
+    draw_overlay = ImageDraw.Draw(overlay)
+    rect_margin = 40
+    rect_radius = 20
+    draw_overlay.rounded_rectangle(
+        (rect_margin, rect_margin, width - rect_margin, height - rect_margin),
+        radius=rect_radius,
+        fill=(255, 255, 255, 235), # White with ~92% opacity
+        outline=(200, 200, 200, 150),
+        width=2
+    )
     img = Image.alpha_composite(img, overlay)
     draw = ImageDraw.Draw(img)
 
-    # أماكن الكتابة (محاذاة لليمين يدويًا)
-    y_text = rect_y0 + 20
-    x_margin = 60
-    spacing = 52
-    max_text_width = width - 2 * x_margin
+    # --- Font and Color Setup ---
+    try:
+        font_main_bold = ImageFont.truetype("Arial", 38, encoding='unic')
+        font_main_regular = ImageFont.truetype("Arial", 32, encoding='unic')
+        font_price = ImageFont.truetype("Arial", 55, encoding='unic')
+        font_footer = ImageFont.truetype("Arial", 24, encoding='unic')
+    except IOError:
+        logger.warning("Arial font not found. Using default font. Arabic text might not render correctly.")
+        font_main_bold = ImageFont.load_default()
+        font_main_regular = ImageFont.load_default()
+        font_price = ImageFont.load_default()
+        font_footer = ImageFont.load_default()
 
-    def draw_right(text, y, font, fill):
-        try:
-            if hasattr(draw, 'textbbox'):
-                bbox = draw.textbbox((0, 0), text, font=font)
-                text_width = bbox[2] - bbox[0]
-            else:
-                text_width, _ = font.getsize(text)
-        except Exception:
-            text_width = 0
-        x = width - x_margin - text_width
-        draw.text((x, y), text, font=font, fill=fill, align="right")
+    color_title = (20, 40, 80)      # Dark Blue
+    color_text = (50, 50, 50)         # Dark Gray
+    color_new_price = (217, 48, 37)   # Red
+    color_old_price = (110, 110, 110) # Medium Gray
+    color_increase = (28, 153, 83)    # Green
+    color_decrease = (217, 48, 37)    # Red
+    color_footer = (150, 150, 150)    # Light Gray
 
-    # عنوان
-    draw_right("💊 تحديث سعر دواء جديد", y_text, font_bold, color_title)
-    y_text += spacing + 10
-    # البيانات
-    draw_right(f"🧾 الاسم التجاري: {data['name_ar']}", y_text, font, color_label)
-    y_text += spacing
-    draw_right(f"💬 الاسم الإنجليزي: {data['name_en']}", y_text, font, color_label)
-    y_text += spacing
-    draw_right(f"💊 الشكل الدوائي: {data['dosage_form']}", y_text, font, color_label)
-    y_text += spacing
-    draw_right(f"🔢 الباركود: {data['barcode']}", y_text, font, color_label)
-    y_text += spacing + 10
-    draw_right(f"📈 السعر الجديد: {data['new_price']} جنيه", y_text, font_bold, color_price)
-    y_text += spacing
-    draw_right(f"📉 السعر السابق: {data['old_price']} جنيه", y_text, font, color_value)
-    y_text += spacing
-    draw_right(f"📊 نسبة الزيادة: {data['percent']}", y_text, font, color_percent)
-    y_text += spacing
-    draw_right(f"🕒 {data['timestamp']}", y_text, font, color_time)
+    # --- Text Drawing Logic ---
+    right_margin = 75
+    current_y = 70
 
-    img = img.convert('RGB')
-    img.save(output_path, quality=95)
+    def draw_text_right(text: str, y_pos: int, font: ImageFont.FreeTypeFont, fill: Tuple[int, int, int]):
+        """Helper to draw right-aligned text."""
+        bbox = draw.textbbox((0, 0), text, font=font, anchor='ra')
+        text_width = bbox[2] - bbox[0]
+        x_pos = width - right_margin
+        draw.text((x_pos, y_pos), text, font=font, fill=fill, anchor='ra', align='right')
+
+    # Title
+    draw_text_right("تحديث سعر دواء", current_y, font_main_bold, color_title)
+    current_y += 60
+    draw.line([(right_margin, current_y), (width - right_margin, current_y)], fill=(220, 220, 220), width=2)
+    current_y += 30
+
+    # Drug Info
+    draw_text_right(f"{data['name_ar']}", current_y, font_main_bold, color_text)
+    current_y += 45
+    if data.get('name_en'):
+        draw_text_right(f"{data['name_en']}", current_y, font_main_regular, color_text)
+        current_y += 45
+    
+    draw_text_right(f"الشكل الدوائي: {data['dosage_form']}", current_y, font_main_regular, color_text)
+    current_y += 45
+    
+    # Price Section
+    current_y += 20
+    draw_text_right("السعر الجديد", current_y, font_main_regular, color_text)
+    current_y += 75
+    draw_text_right(f"{data['new_price']} جنيه", current_y, font_price, color_new_price)
+    current_y += 50
+    
+    # Old Price and Percentage
+    price_change_text = f"السعر السابق: {data['old_price']} جنيه  |  نسبة التغيير: {data['percent']}"
+    percent_color = color_increase if '%' in data['percent'] and data['percent'].startswith('+') else color_decrease
+    
+    # To color the percentage part differently, we draw it in two parts
+    old_price_part = f"السعر السابق: {data['old_price']} جنيه  |  "
+    percent_part = f"نسبة التغيير: {data['percent']}"
+    
+    percent_bbox = draw.textbbox((0,0), percent_part, font=font_main_regular, anchor='ra')
+    percent_width = percent_bbox[2] - percent_bbox[0]
+    
+    draw_text_right(percent_part, current_y, font_main_regular, percent_color)
+    draw.text(
+        (width - right_margin - percent_width, current_y),
+        old_price_part,
+        font=font_main_regular,
+        fill=color_old_price,
+        anchor='ra',
+        align='right'
+    )
+    current_y += 60
+
+    # Footer
+    draw.line([(right_margin, current_y), (width - right_margin, current_y)], fill=(220, 220, 220), width=2)
+    current_y += 20
+    draw_text_right(data['timestamp'], current_y, font_footer, color_footer)
+
+    # --- Save the final image ---
+    final_image = img.convert('RGB')
+    final_image.save(output_path, "PNG", quality=95, optimize=True)
+    logger.info(f"Notification image saved to {output_path}")
     return output_path
+
 
 async def send_telegram_message(message: str, client: TelegramClient) -> bool:
     target_channel_str = os.environ.get("TARGET_CHANNEL")
@@ -328,10 +323,9 @@ async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_clien
             if not drug_id: continue
             last_db_record = last_row_by_id.get(drug_id)
             if not last_db_record:
-                # دواء جديد، أضفه بدون إشعار
                 records_to_commit.append({'api_data': drug_data, 'db_data': None, 'is_new': True})
                 continue
-            # المقارنة فقط بين السعر الحالي من الموقع وآخر سعر مخزن في قاعدة البيانات
+
             api_price = drug_data.get("Current Price")
             db_price = last_db_record.get("current_price")
             if are_values_different(api_price, db_price):
@@ -352,11 +346,10 @@ async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_clien
             drug_data = record['api_data']
             last_db_record = record['db_data']
             
-            # إذا كان دواء جديد، أضفه بدون إشعار
             if record['is_new']:
                 final_records_to_upload.append(drug_data)
                 continue
-            # إذا تغير السعر فعلاً، أرسل إشعار صورة فقط
+
             api_price = drug_data.get("Current Price")
             db_price = last_db_record.get("current_price")
             if are_values_different(api_price, db_price):
@@ -366,12 +359,17 @@ async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_clien
                     try:
                         image_data = get_notification_image_data({'previous': last_db_record, 'current': drug_data})
                         image_path = f"notification_{drug_data['ID']}.png"
-                        create_notification_image(image_data, output_path=image_path)
+                        # Use the new improved function to create the image
+                        create_notification_image(image_data, logo_path='background.jpg', output_path=image_path)
                         notification_sent = await send_telegram_image(image_path, telegram_client)
+                        # Clean up the generated image file
+                        if os.path.exists(image_path):
+                            os.remove(image_path)
                     except Exception as e:
                         logger.error(f"Error creating or sending notification image for ID {drug_data['ID']}: {e}")
                 else:
                     logger.warning(f"Telegram client not available. Cannot send notification for ID {drug_data['ID']}.")
+                
                 if notification_sent:
                     logger.info(f"Notification for ID {drug_data['ID']} SUCCEEDED. Queuing for DB update.")
                     final_records_to_upload.append(drug_data)
@@ -379,7 +377,6 @@ async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_clien
                 else:
                     logger.warning(f"Notification for ID {drug_data['ID']} FAILED. Skipping DB update for this run to retry later.")
             else:
-                # لا يوجد تغير في السعر، لا إشعار ولا تحديث
                 logger.info(f"[SKIP] No price change for ID {drug_data['ID']}.")
 
         logger.info(f"Processing complete. Total notifications sent: {notifications_sent}. Total records to upload: {len(final_records_to_upload)}.")
@@ -406,34 +403,37 @@ async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_clien
     except Exception as e:
         logger.exception(f"An unhandled error occurred during process_and_commit_changes: {e}")
 
-def get_notification_image_data(change_info: Dict[str, Any]):
-    curr_record, prev_record = change_info['current'], change_info['previous']
-    name_ar = curr_record.get('Commercial Name (Arabic)', "اسم غير متوفر")
-    name_en = curr_record.get('Commercial Name (English)', "Name not available")
-    dosage_form = curr_record.get('Dosage Form', "غير محدد")
-    barcode = curr_record.get('Barcode', "لا يوجد")
+def get_notification_image_data(change_info: Dict[str, Any]) -> Dict[str, Any]:
+    """Prepares the data dictionary needed for creating the notification image."""
+    curr_record = change_info['current']
+    prev_record = change_info['previous']
+    
     old_price_val = prev_record.get('current_price')
     new_price_val = curr_record.get('Current Price')
-    old_price_str = f"{old_price_val:g}" if old_price_val is not None else "N/A"
-    new_price_str = f"{new_price_val:g}" if new_price_val is not None else "N/A"
+    
     try:
-        if old_price_val and new_price_val:
+        if old_price_val is not None and new_price_val is not None:
             old_p, new_p = Decimal(str(old_price_val)), Decimal(str(new_price_val))
-            percent = ((new_p - old_p) / old_p) * 100 if old_p > 0 else 0
-            percent_str = f"{percent:+.2f}%"
+            if old_p > 0:
+                percent = ((new_p - old_p) / old_p) * 100
+                percent_str = f"{percent:+.2f}%"
+            else:
+                percent_str = "N/A"
         else:
             percent_str = "N/A"
-    except Exception:
+    except (InvalidOperation, TypeError):
         percent_str = "N/A"
+
     cairo_tz = datetime.timezone(datetime.timedelta(hours=3))
-    timestamp = datetime.datetime.now(cairo_tz).strftime('%d-%m-%Y – %I:%M %p (بتوقيت القاهرة 🇪🇬)')
+    timestamp = datetime.datetime.now(cairo_tz).strftime('%d-%m-%Y – %I:%M %p  🇪🇬')
+
     return {
-        'name_ar': name_ar,
-        'name_en': name_en,
-        'dosage_form': dosage_form,
-        'barcode': barcode,
-        'old_price': old_price_str,
-        'new_price': new_price_str,
+        'name_ar': curr_record.get('Commercial Name (Arabic)', "اسم غير متوفر"),
+        'name_en': curr_record.get('Commercial Name (English)', "Name not available"),
+        'dosage_form': curr_record.get('Dosage Form', "غير محدد"),
+        'barcode': curr_record.get('Barcode', "لا يوجد"),
+        'old_price': f"{old_price_val:g}" if old_price_val is not None else "N/A",
+        'new_price': f"{new_price_val:g}" if new_price_val is not None else "N/A",
         'percent': percent_str,
         'timestamp': timestamp
     }
