@@ -174,57 +174,59 @@ def format_change_message(change_info: Dict[str, Any]) -> str:
         f"🕒 <i>{timestamp}</i>"
     )
 
-def create_notification_image(data, logo_path='logo.png', output_path='notification.png'):
-    # إعداد الصورة الأساسية
-    width, height = 1080, 1080
-    img = Image.new('RGB', (width, height), color='#fff')
+def create_notification_image(data, logo_path='background.png', output_path='notification.png'):
+    # فتح صورة الخلفية التي أرسلتها (يجب أن تكون 1080x1080)
+    try:
+        img = Image.open(logo_path).convert('RGBA')
+        width, height = img.size
+    except Exception as e:
+        logger.error(f"Could not open background image: {e}")
+        # fallback: صورة بيضاء
+        width, height = 1080, 1080
+        img = Image.new('RGBA', (width, height), color='#fff')
     draw = ImageDraw.Draw(img)
 
-    # إضافة اللوجو في الخلفية بشكل باهت
+    # خطوط (حاول استخدام خط عربي جميل، وإلا استخدم الافتراضي)
     try:
-        logo = Image.open(logo_path).convert('RGBA')
-        # تغيير حجم اللوجو ليكون مناسب للخلفية
-        logo_w = int(width * 0.7)
-        logo_h = int(logo.height * (logo_w / logo.width))
-        logo = logo.resize((logo_w, logo_h))
-        # تقليل الشفافية
-        alpha = logo.split()[3]
-        alpha = ImageEnhance.Brightness(alpha).enhance(0.15)  # شفافية منخفضة
-        logo.putalpha(alpha)
-        # وضع اللوجو في منتصف الخلفية
-        x = (width - logo_w) // 2
-        y = (height - logo_h) // 2
-        img.paste(logo, (x, y), logo)
-    except Exception as e:
-        logger.warning(f"Could not add logo to notification image: {e}")
-
-    # خطوط (تأكد من وجود الخطوط أو استخدم خطوط النظام الافتراضية)
-    try:
-        font_bold = ImageFont.truetype("arialbd.ttf", 54)
-        font = ImageFont.truetype("arial.ttf", 38)
+        font_bold = ImageFont.truetype("arialbd.ttf", 60)
+        font = ImageFont.truetype("arial.ttf", 44)
     except:
-        font_bold = font = None  # fallback
+        font_bold = font = None
 
-    # رسم البيانات
-    y_text = 80
-    draw.text((80, y_text), "💊 تحديث سعر دواء جديد", font=font_bold, fill="#1d3557")
-    y_text += 90
-    draw.text((80, y_text), f"🧾 الاسم التجاري: {data['name_ar']}", font=font, fill="#222")
-    y_text += 60
-    draw.text((80, y_text), f"💬 الاسم الإنجليزي: {data['name_en']}", font=font, fill="#222")
-    y_text += 60
-    draw.text((80, y_text), f"💊 الشكل الدوائي: {data['dosage_form']}", font=font, fill="#222")
-    y_text += 60
-    draw.text((80, y_text), f"🔢 الباركود: {data['barcode']}", font=font, fill="#222")
-    y_text += 80
-    draw.text((80, y_text), f"📈 السعر الجديد: {data['new_price']} جنيه", font=font_bold, fill="#e63946")
-    y_text += 60
-    draw.text((80, y_text), f"📉 السعر السابق: {data['old_price']} جنيه", font=font, fill="#555")
-    y_text += 60
-    draw.text((80, y_text), f"📊 نسبة الزيادة: {data['percent']}", font=font, fill="#e63946")
-    y_text += 70
-    draw.text((80, y_text), f"🕒 {data['timestamp']}", font=font, fill="#888")
+    # ألوان
+    color_title = (29, 53, 87)
+    color_label = (34, 34, 34)
+    color_value = (34, 34, 34)
+    color_price = (230, 57, 70)
+    color_percent = (230, 57, 70)
+    color_time = (120, 120, 120)
 
+    # أماكن الكتابة (أسفل الصورة مع تباعد جيد)
+    y_text = 200
+    x_text = 120
+    spacing = 70
+
+    # عنوان
+    draw.text((x_text, y_text), "💊 تحديث سعر دواء جديد", font=font_bold, fill=color_title)
+    y_text += spacing + 20
+    # البيانات
+    draw.text((x_text, y_text), f"🧾 الاسم التجاري: {data['name_ar']}", font=font, fill=color_label)
+    y_text += spacing
+    draw.text((x_text, y_text), f"💬 الاسم الإنجليزي: {data['name_en']}", font=font, fill=color_label)
+    y_text += spacing
+    draw.text((x_text, y_text), f"💊 الشكل الدوائي: {data['dosage_form']}", font=font, fill=color_label)
+    y_text += spacing
+    draw.text((x_text, y_text), f"🔢 الباركود: {data['barcode']}", font=font, fill=color_label)
+    y_text += spacing + 10
+    draw.text((x_text, y_text), f"📈 السعر الجديد: {data['new_price']} جنيه", font=font_bold, fill=color_price)
+    y_text += spacing
+    draw.text((x_text, y_text), f"📉 السعر السابق: {data['old_price']} جنيه", font=font, fill=color_value)
+    y_text += spacing
+    draw.text((x_text, y_text), f"📊 نسبة الزيادة: {data['percent']}", font=font, fill=color_percent)
+    y_text += spacing
+    draw.text((x_text, y_text), f"🕒 {data['timestamp']}", font=font, fill=color_time)
+
+    img = img.convert('RGB')
     img.save(output_path)
     return output_path
 
