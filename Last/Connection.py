@@ -202,30 +202,36 @@ def create_notification_image(data, logo_path='background.png', output_path='not
     color_percent = (230, 57, 70)
     color_time = (120, 120, 120)
 
-    # أماكن الكتابة (منتصف الصورة)
+    # أماكن الكتابة (محاذاة لليمين يدويًا)
     y_text = 220
-    x_text = 120
+    x_margin = 80
     spacing = 60
+    max_text_width = width - 2 * x_margin
+
+    def draw_right(text, y, font, fill):
+        text_width, _ = draw.textsize(text, font=font)
+        x = width - x_margin - text_width
+        draw.text((x, y), text, font=font, fill=fill)
 
     # عنوان
-    draw.text((x_text, y_text), "💊 تحديث سعر دواء جديد", font=font_bold, fill=color_title, direction='rtl')
+    draw_right("💊 تحديث سعر دواء جديد", y_text, font_bold, color_title)
     y_text += spacing + 10
     # البيانات
-    draw.text((x_text, y_text), f"🧾 الاسم التجاري: {data['name_ar']}", font=font, fill=color_label, direction='rtl')
+    draw_right(f"🧾 الاسم التجاري: {data['name_ar']}", y_text, font, color_label)
     y_text += spacing
-    draw.text((x_text, y_text), f"💬 الاسم الإنجليزي: {data['name_en']}", font=font, fill=color_label, direction='rtl')
+    draw_right(f"💬 الاسم الإنجليزي: {data['name_en']}", y_text, font, color_label)
     y_text += spacing
-    draw.text((x_text, y_text), f"💊 الشكل الدوائي: {data['dosage_form']}", font=font, fill=color_label, direction='rtl')
+    draw_right(f"💊 الشكل الدوائي: {data['dosage_form']}", y_text, font, color_label)
     y_text += spacing
-    draw.text((x_text, y_text), f"🔢 الباركود: {data['barcode']}", font=font, fill=color_label, direction='rtl')
+    draw_right(f"🔢 الباركود: {data['barcode']}", y_text, font, color_label)
     y_text += spacing + 10
-    draw.text((x_text, y_text), f"📈 السعر الجديد: {data['new_price']} جنيه", font=font_bold, fill=color_price, direction='rtl')
+    draw_right(f"📈 السعر الجديد: {data['new_price']} جنيه", y_text, font_bold, color_price)
     y_text += spacing
-    draw.text((x_text, y_text), f"📉 السعر السابق: {data['old_price']} جنيه", font=font, fill=color_value, direction='rtl')
+    draw_right(f"📉 السعر السابق: {data['old_price']} جنيه", y_text, font, color_value)
     y_text += spacing
-    draw.text((x_text, y_text), f"📊 نسبة الزيادة: {data['percent']}", font=font, fill=color_percent, direction='rtl')
+    draw_right(f"📊 نسبة الزيادة: {data['percent']}", y_text, font, color_percent)
     y_text += spacing
-    draw.text((x_text, y_text), f"🕒 {data['timestamp']}", font=font, fill=color_time, direction='rtl')
+    draw_right(f"🕒 {data['timestamp']}", y_text, font, color_time)
 
     img = img.convert('RGB')
     img.save(output_path, quality=95)
