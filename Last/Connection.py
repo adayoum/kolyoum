@@ -175,25 +175,26 @@ def format_change_message(change_info: Dict[str, Any]) -> str:
     )
 
 def create_notification_image(data, logo_path='background.png', output_path='notification.png'):
-    # فتح صورة الخلفية التي أرسلتها (يجب أن تكون 1080x1080)
+    # فتح صورة الخلفية التي أرسلتها المستخدم (يفترض أنها 1080x1080)
     try:
         img = Image.open(logo_path).convert('RGBA')
         width, height = img.size
     except Exception as e:
         logger.error(f"Could not open background image: {e}")
-        # fallback: صورة بيضاء
         width, height = 1080, 1080
         img = Image.new('RGBA', (width, height), color='#fff')
     draw = ImageDraw.Draw(img)
 
-    # خطوط (حاول استخدام خط عربي جميل، وإلا استخدم الافتراضي)
+    # خطوط تدعم العربية (يفضل استخدام خط مثل Tahoma أو Arial Unicode)
+    font_path_bold = "arialbd.ttf"
+    font_path = "arial.ttf"
     try:
-        font_bold = ImageFont.truetype("arialbd.ttf", 60)
-        font = ImageFont.truetype("arial.ttf", 44)
+        font_bold = ImageFont.truetype(font_path_bold, 48)
+        font = ImageFont.truetype(font_path, 36)
     except:
-        font_bold = font = None
+        font_bold = font = ImageFont.load_default()
 
-    # ألوان
+    # ألوان واضحة
     color_title = (29, 53, 87)
     color_label = (34, 34, 34)
     color_value = (34, 34, 34)
@@ -201,33 +202,33 @@ def create_notification_image(data, logo_path='background.png', output_path='not
     color_percent = (230, 57, 70)
     color_time = (120, 120, 120)
 
-    # أماكن الكتابة (أسفل الصورة مع تباعد جيد)
-    y_text = 200
+    # أماكن الكتابة (منتصف الصورة)
+    y_text = 220
     x_text = 120
-    spacing = 70
+    spacing = 60
 
     # عنوان
-    draw.text((x_text, y_text), "💊 تحديث سعر دواء جديد", font=font_bold, fill=color_title)
-    y_text += spacing + 20
-    # البيانات
-    draw.text((x_text, y_text), f"🧾 الاسم التجاري: {data['name_ar']}", font=font, fill=color_label)
-    y_text += spacing
-    draw.text((x_text, y_text), f"💬 الاسم الإنجليزي: {data['name_en']}", font=font, fill=color_label)
-    y_text += spacing
-    draw.text((x_text, y_text), f"💊 الشكل الدوائي: {data['dosage_form']}", font=font, fill=color_label)
-    y_text += spacing
-    draw.text((x_text, y_text), f"🔢 الباركود: {data['barcode']}", font=font, fill=color_label)
+    draw.text((x_text, y_text), "💊 تحديث سعر دواء جديد", font=font_bold, fill=color_title, direction='rtl')
     y_text += spacing + 10
-    draw.text((x_text, y_text), f"📈 السعر الجديد: {data['new_price']} جنيه", font=font_bold, fill=color_price)
+    # البيانات
+    draw.text((x_text, y_text), f"🧾 الاسم التجاري: {data['name_ar']}", font=font, fill=color_label, direction='rtl')
     y_text += spacing
-    draw.text((x_text, y_text), f"📉 السعر السابق: {data['old_price']} جنيه", font=font, fill=color_value)
+    draw.text((x_text, y_text), f"💬 الاسم الإنجليزي: {data['name_en']}", font=font, fill=color_label, direction='rtl')
     y_text += spacing
-    draw.text((x_text, y_text), f"📊 نسبة الزيادة: {data['percent']}", font=font, fill=color_percent)
+    draw.text((x_text, y_text), f"💊 الشكل الدوائي: {data['dosage_form']}", font=font, fill=color_label, direction='rtl')
     y_text += spacing
-    draw.text((x_text, y_text), f"🕒 {data['timestamp']}", font=font, fill=color_time)
+    draw.text((x_text, y_text), f"🔢 الباركود: {data['barcode']}", font=font, fill=color_label, direction='rtl')
+    y_text += spacing + 10
+    draw.text((x_text, y_text), f"📈 السعر الجديد: {data['new_price']} جنيه", font=font_bold, fill=color_price, direction='rtl')
+    y_text += spacing
+    draw.text((x_text, y_text), f"📉 السعر السابق: {data['old_price']} جنيه", font=font, fill=color_value, direction='rtl')
+    y_text += spacing
+    draw.text((x_text, y_text), f"📊 نسبة الزيادة: {data['percent']}", font=font, fill=color_percent, direction='rtl')
+    y_text += spacing
+    draw.text((x_text, y_text), f"🕒 {data['timestamp']}", font=font, fill=color_time, direction='rtl')
 
     img = img.convert('RGB')
-    img.save(output_path)
+    img.save(output_path, quality=95)
     return output_path
 
 async def send_telegram_message(message: str, client: TelegramClient) -> bool:
