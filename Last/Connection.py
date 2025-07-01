@@ -11,6 +11,7 @@ from supabase import create_client, Client
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 from decimal import Decimal, InvalidOperation
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 
 # Load environment variables from .env file
 # SECURITY: Never commit your .env file to a public repository.
@@ -173,6 +174,60 @@ def format_change_message(change_info: Dict[str, Any]) -> str:
         f"🕒 <i>{timestamp}</i>"
     )
 
+def create_notification_image(data, logo_path='logo.png', output_path='notification.png'):
+    # إعداد الصورة الأساسية
+    width, height = 1080, 1080
+    img = Image.new('RGB', (width, height), color='#fff')
+    draw = ImageDraw.Draw(img)
+
+    # إضافة اللوجو في الخلفية بشكل باهت
+    try:
+        logo = Image.open(logo_path).convert('RGBA')
+        # تغيير حجم اللوجو ليكون مناسب للخلفية
+        logo_w = int(width * 0.7)
+        logo_h = int(logo.height * (logo_w / logo.width))
+        logo = logo.resize((logo_w, logo_h))
+        # تقليل الشفافية
+        alpha = logo.split()[3]
+        alpha = ImageEnhance.Brightness(alpha).enhance(0.15)  # شفافية منخفضة
+        logo.putalpha(alpha)
+        # وضع اللوجو في منتصف الخلفية
+        x = (width - logo_w) // 2
+        y = (height - logo_h) // 2
+        img.paste(logo, (x, y), logo)
+    except Exception as e:
+        logger.warning(f"Could not add logo to notification image: {e}")
+
+    # خطوط (تأكد من وجود الخطوط أو استخدم خطوط النظام الافتراضية)
+    try:
+        font_bold = ImageFont.truetype("arialbd.ttf", 54)
+        font = ImageFont.truetype("arial.ttf", 38)
+    except:
+        font_bold = font = None  # fallback
+
+    # رسم البيانات
+    y_text = 80
+    draw.text((80, y_text), "💊 تحديث سعر دواء جديد", font=font_bold, fill="#1d3557")
+    y_text += 90
+    draw.text((80, y_text), f"🧾 الاسم التجاري: {data['name_ar']}", font=font, fill="#222")
+    y_text += 60
+    draw.text((80, y_text), f"💬 الاسم الإنجليزي: {data['name_en']}", font=font, fill="#222")
+    y_text += 60
+    draw.text((80, y_text), f"💊 الشكل الدوائي: {data['dosage_form']}", font=font, fill="#222")
+    y_text += 60
+    draw.text((80, y_text), f"🔢 الباركود: {data['barcode']}", font=font, fill="#222")
+    y_text += 80
+    draw.text((80, y_text), f"📈 السعر الجديد: {data['new_price']} جنيه", font=font_bold, fill="#e63946")
+    y_text += 60
+    draw.text((80, y_text), f"📉 السعر السابق: {data['old_price']} جنيه", font=font, fill="#555")
+    y_text += 60
+    draw.text((80, y_text), f"📊 نسبة الزيادة: {data['percent']}", font=font, fill="#e63946")
+    y_text += 70
+    draw.text((80, y_text), f"🕒 {data['timestamp']}", font=font, fill="#888")
+
+    img.save(output_path)
+    return output_path
+
 async def send_telegram_message(message: str, client: TelegramClient) -> bool:
     target_channel_str = os.environ.get("TARGET_CHANNEL")
     if not target_channel_str:
@@ -185,6 +240,20 @@ async def send_telegram_message(message: str, client: TelegramClient) -> bool:
         return True
     except Exception as e:
         logger.error(f"Failed to send Telegram message: {e}", exc_info=True)
+        return False
+
+async def send_telegram_image(image_path, client, caption=""):
+    target_channel_str = os.environ.get("TARGET_CHANNEL")
+    if not target_channel_str:
+        logger.warning("TARGET_CHANNEL not set. Cannot send image.")
+        return False
+    try:
+        target_channel = int(target_channel_str) if target_channel_str.lstrip('-').isdigit() else target_channel_str
+        await client.send_file(target_channel, image_path, caption=caption)
+        logger.info(f"Image notification sent successfully to channel {target_channel}.")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send Telegram image: {e}", exc_info=True)
         return False
 
 # --- NEW COMBINED LOGIC: Reconcile, Notify, and Upload ---
@@ -245,15 +314,20 @@ async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_clien
             if record['is_new']:
                 final_records_to_upload.append(drug_data)
                 continue
-            # إذا تغير السعر فعلاً، أرسل إشعار
+            # إذا تغير السعر فعلاً، أرسل إشعار صورة فقط
             api_price = drug_data.get("Current Price")
             db_price = last_db_record.get("current_price")
             if are_values_different(api_price, db_price):
                 logger.info(f"[NOTIFY] Price change detected for ID {drug_data['ID']}: {db_price} -> {api_price}")
                 notification_sent = False
                 if telegram_client and telegram_client.is_connected():
-                    message = format_change_message({'previous': last_db_record, 'current': drug_data})
-                    notification_sent = await send_telegram_message(message, telegram_client)
+                    try:
+                        image_data = get_notification_image_data({'previous': last_db_record, 'current': drug_data})
+                        image_path = f"notification_{drug_data['ID']}.png"
+                        create_notification_image(image_data, output_path=image_path)
+                        notification_sent = await send_telegram_image(image_path, telegram_client)
+                    except Exception as e:
+                        logger.error(f"Error creating or sending notification image for ID {drug_data['ID']}: {e}")
                 else:
                     logger.warning(f"Telegram client not available. Cannot send notification for ID {drug_data['ID']}.")
                 if notification_sent:
@@ -289,6 +363,38 @@ async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_clien
 
     except Exception as e:
         logger.exception(f"An unhandled error occurred during process_and_commit_changes: {e}")
+
+def get_notification_image_data(change_info: Dict[str, Any]):
+    curr_record, prev_record = change_info['current'], change_info['previous']
+    name_ar = curr_record.get('Commercial Name (Arabic)', "اسم غير متوفر")
+    name_en = curr_record.get('Commercial Name (English)', "Name not available")
+    dosage_form = curr_record.get('Dosage Form', "غير محدد")
+    barcode = curr_record.get('Barcode', "لا يوجد")
+    old_price_val = prev_record.get('current_price')
+    new_price_val = curr_record.get('Current Price')
+    old_price_str = f"{old_price_val:g}" if old_price_val is not None else "N/A"
+    new_price_str = f"{new_price_val:g}" if new_price_val is not None else "N/A"
+    try:
+        if old_price_val and new_price_val:
+            old_p, new_p = Decimal(str(old_price_val)), Decimal(str(new_price_val))
+            percent = ((new_p - old_p) / old_p) * 100 if old_p > 0 else 0
+            percent_str = f"{percent:+.2f}%"
+        else:
+            percent_str = "N/A"
+    except Exception:
+        percent_str = "N/A"
+    cairo_tz = datetime.timezone(datetime.timedelta(hours=3))
+    timestamp = datetime.datetime.now(cairo_tz).strftime('%d-%m-%Y – %I:%M %p (بتوقيت القاهرة 🇪🇬)')
+    return {
+        'name_ar': name_ar,
+        'name_en': name_en,
+        'dosage_form': dosage_form,
+        'barcode': barcode,
+        'old_price': old_price_str,
+        'new_price': new_price_str,
+        'percent': percent_str,
+        'timestamp': timestamp
+    }
 
 # --- Main Execution ---
 async def main():
