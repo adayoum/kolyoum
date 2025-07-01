@@ -140,106 +140,123 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
 
 def create_notification_image(data: Dict[str, Any], logo_path: str = 'background.jpg', output_path: str = 'notification.png'):
     """
-    Creates a professional notification image using the Almarai font.
+    Creates a professional notification image with Arabic support.
+
+    Args:
+        data: A dictionary containing the notification text data.
+        logo_path: Path to the background logo image.
+        output_path: Path to save the generated image.
     """
     width, height = 800, 600
     try:
         background = Image.open(logo_path).convert('RGBA')
+        # Resize while maintaining aspect ratio (optional, but good practice)
         background.thumbnail((width, height))
         bg_w, bg_h = background.size
+        # Create a new canvas and paste the background in the center
         img = Image.new('RGBA', (width, height), (255, 255, 255, 255))
-        img.paste(background, ((width - bg_w) // 2, (height - bg_h) // 2), background)
-    except FileNotFoundError:
-        logger.error(f"Logo file not found at '{logo_path}'. Using a plain background.")
-        img = Image.new('RGBA', (width, height), (245, 245, 245, 255))
+        img.paste(background, ((width - bg_w) // 2, (height - bg_h) // 2))
+
     except Exception as e:
-        logger.error(f"An error occurred while opening the background image: {e}")
-        img = Image.new('RGBA', (width, height), (245, 245, 245, 255))
+        logger.error(f"Could not open background image at {logo_path}: {e}")
+        img = Image.new('RGBA', (width, height), (240, 240, 240, 255))
 
     # --- Create a semi-transparent overlay for text readability ---
-    overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
     draw_overlay = ImageDraw.Draw(overlay)
-    rect_margin = 35
+    rect_margin = 40
+    rect_radius = 20
     draw_overlay.rounded_rectangle(
         (rect_margin, rect_margin, width - rect_margin, height - rect_margin),
-        radius=15,
-        fill=(255, 255, 255, 240) # White with ~94% opacity
+        radius=rect_radius,
+        fill=(255, 255, 255, 235), # White with ~92% opacity
+        outline=(200, 200, 200, 150),
+        width=2
     )
     img = Image.alpha_composite(img, overlay)
     draw = ImageDraw.Draw(img)
 
-    # --- Font and Color Setup (Using Almarai Font) ---
-    font_regular_path = 'Almarai-Regular.ttf'
-    font_bold_path = 'Almarai-Bold.ttf'
-    font_extrabold_path = 'Almarai-ExtraBold.ttf'
+    # --- Font and Color Setup ---
     try:
-        # Prioritize local Almarai fonts
-        font_main_bold = ImageFont.truetype(font_bold_path, 38)
-        font_main_regular = ImageFont.truetype(font_regular_path, 32)
-        font_price = ImageFont.truetype(font_extrabold_path, 55)
-        font_footer = ImageFont.truetype(font_regular_path, 24)
-        logger.info(f"Successfully loaded local Almarai fonts.")
+        font_main_bold = ImageFont.truetype("Arial", 38, encoding='unic')
+        font_main_regular = ImageFont.truetype("Arial", 32, encoding='unic')
+        font_price = ImageFont.truetype("Arial", 55, encoding='unic')
+        font_footer = ImageFont.truetype("Arial", 24, encoding='unic')
     except IOError:
-        logger.critical(f"CRITICAL: Could not find Almarai fonts. Please ensure '{font_regular_path}', '{font_bold_path}', and '{font_extrabold_path}' are in the script's directory.")
-        # Fallback to default if Almarai is missing
+        logger.warning("Arial font not found. Using default font. Arabic text might not render correctly.")
         font_main_bold = ImageFont.load_default()
         font_main_regular = ImageFont.load_default()
         font_price = ImageFont.load_default()
         font_footer = ImageFont.load_default()
 
-    color_title = (20, 40, 80)
-    color_text = (50, 50, 50)
-    color_new_price = (217, 48, 37)
-    color_increase = (28, 153, 83)
-    color_decrease = (217, 48, 37)
-    color_footer = (150, 150, 150)
-    
+    color_title = (20, 40, 80)      # Dark Blue
+    color_text = (50, 50, 50)         # Dark Gray
+    color_new_price = (217, 48, 37)   # Red
+    color_old_price = (110, 110, 110) # Medium Gray
+    color_increase = (28, 153, 83)    # Green
+    color_decrease = (217, 48, 37)    # Red
+    color_footer = (150, 150, 150)    # Light Gray
+
     # --- Text Drawing Logic ---
-    right_margin = 70
-    left_margin = 70
-    current_y = 60
+    right_margin = 75
+    current_y = 70
 
     def draw_text_right(text: str, y_pos: int, font: ImageFont.FreeTypeFont, fill: Tuple[int, int, int]):
-        """Helper to draw right-aligned text using anchor."""
+        """Helper to draw right-aligned text."""
+        bbox = draw.textbbox((0, 0), text, font=font, anchor='ra')
+        text_width = bbox[2] - bbox[0]
         x_pos = width - right_margin
         draw.text((x_pos, y_pos), text, font=font, fill=fill, anchor='ra', align='right')
 
-    # Header
-    draw.line([(left_margin, current_y), (width - right_margin, current_y)], fill=(220, 220, 220), width=2)
-    current_y += 15
-    draw_text_right(f"DrugShift - تحديث أسعار الأدوية", current_y, font_main_regular, color_title)
-    current_y += 45
-    draw.line([(left_margin, current_y), (width - right_margin, current_y)], fill=(220, 220, 220), width=2)
-    current_y += 40
+    # Title
+    draw_text_right("تحديث سعر دواء", current_y, font_main_bold, color_title)
+    current_y += 60
+    draw.line([(right_margin, current_y), (width - right_margin, current_y)], fill=(220, 220, 220), width=2)
+    current_y += 30
 
     # Drug Info
     draw_text_right(f"{data['name_ar']}", current_y, font_main_bold, color_text)
-    current_y += 50
+    current_y += 45
     if data.get('name_en'):
         draw_text_right(f"{data['name_en']}", current_y, font_main_regular, color_text)
         current_y += 45
     
+    draw_text_right(f"الشكل الدوائي: {data['dosage_form']}", current_y, font_main_regular, color_text)
+    current_y += 45
+    
     # Price Section
     current_y += 20
-    draw_text_right("السعر الجديد", current_y, font_main_bold, color_new_price)
+    draw_text_right("السعر الجديد", current_y, font_main_regular, color_text)
     current_y += 75
     draw_text_right(f"{data['new_price']} جنيه", current_y, font_price, color_new_price)
+    current_y += 50
+    
+    # Old Price and Percentage
+    price_change_text = f"السعر السابق: {data['old_price']} جنيه  |  نسبة التغيير: {data['percent']}"
+    percent_color = color_increase if '%' in data['percent'] and data['percent'].startswith('+') else color_decrease
+    
+    # To color the percentage part differently, we draw it in two parts
+    old_price_part = f"السعر السابق: {data['old_price']} جنيه  |  "
+    percent_part = f"نسبة التغيير: {data['percent']}"
+    
+    percent_bbox = draw.textbbox((0,0), percent_part, font=font_main_regular, anchor='ra')
+    percent_width = percent_bbox[2] - percent_bbox[0]
+    
+    draw_text_right(percent_part, current_y, font_main_regular, percent_color)
+    draw.text(
+        (width - right_margin - percent_width, current_y),
+        old_price_part,
+        font=font_main_regular,
+        fill=color_old_price,
+        anchor='ra',
+        align='right'
+    )
     current_y += 60
 
-    # Old Price and Percentage
-    percent_color = color_increase if '%' in data['percent'] and data['percent'].startswith('+') else color_decrease
-    price_change_text = f"السعر السابق: {data['old_price']} جنيه"
-    draw_text_right(price_change_text, current_y, font_main_regular, color_text)
-    
-    percent_text = f"({data['percent']})"
-    draw.text((left_margin, current_y), percent_text, font=font_main_regular, fill=percent_color, anchor='la', align='left')
-    current_y += 70
-    
     # Footer
-    draw.line([(left_margin, current_y), (width - right_margin, current_y)], fill=(220, 220, 220), width=2)
-    current_y += 15
-    draw.text((width - right_margin, current_y), data['timestamp'], font=font_footer, fill=color_footer, anchor='ra', align='right')
-    draw.text((left_margin, current_y), f"Barcode: {data.get('barcode', 'N/A')}", font=font_footer, fill=color_footer, anchor='la', align='left')
+    draw.line([(right_margin, current_y), (width - right_margin, current_y)], fill=(220, 220, 220), width=2)
+    current_y += 20
+    draw_text_right(data['timestamp'], current_y, font_footer, color_footer)
 
     # --- Save the final image ---
     final_image = img.convert('RGB')
@@ -342,7 +359,7 @@ async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_clien
                     try:
                         image_data = get_notification_image_data({'previous': last_db_record, 'current': drug_data})
                         image_path = f"notification_{drug_data['ID']}.png"
-                        # Use the improved function to create the image with Almarai font
+                        # Use the new improved function to create the image
                         create_notification_image(image_data, logo_path='background.jpg', output_path=image_path)
                         notification_sent = await send_telegram_image(image_path, telegram_client)
                         # Clean up the generated image file
