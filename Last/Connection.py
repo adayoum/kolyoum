@@ -175,24 +175,41 @@ def format_change_message(change_info: Dict[str, Any]) -> str:
     )
 
 def create_notification_image(data, logo_path='background.png', output_path='notification.png'):
-    # فتح صورة الخلفية التي أرسلتها المستخدم (يفترض أنها 1080x1080)
+    # حجم الصورة الجديد
+    width, height = 800, 600
+    # فتح صورة الخلفية وتغيير حجمها
     try:
-        img = Image.open(logo_path).convert('RGBA')
-        width, height = img.size
+        img = Image.open(logo_path).convert('RGBA').resize((width, height))
     except Exception as e:
         logger.error(f"Could not open background image: {e}")
-        width, height = 1080, 1080
         img = Image.new('RGBA', (width, height), color='#fff')
     draw = ImageDraw.Draw(img)
 
-    # خطوط تدعم العربية (يفضل استخدام خط مثل Tahoma أو Arial Unicode)
+    # محاولة استخدام خط عربي واضح
+    font_path_arabic = "Cairo.ttf"  # ضع الخط في نفس مجلد السكريبت
+    font_path_fallback = "NotoNaskhArabic-Regular.ttf"
+    font_path_tahoma = "tahoma.ttf"
     font_path_bold = "arialbd.ttf"
     font_path = "arial.ttf"
+    font_bold = font = None
     try:
-        font_bold = ImageFont.truetype(font_path_bold, 48)
-        font = ImageFont.truetype(font_path, 36)
+        font_bold = ImageFont.truetype(font_path_arabic, 48)
+        font = ImageFont.truetype(font_path_arabic, 38)
     except:
-        font_bold = font = ImageFont.load_default()
+        try:
+            font_bold = ImageFont.truetype(font_path_fallback, 48)
+            font = ImageFont.truetype(font_path_fallback, 38)
+        except:
+            try:
+                font_bold = ImageFont.truetype(font_path_tahoma, 48)
+                font = ImageFont.truetype(font_path_tahoma, 38)
+            except:
+                try:
+                    font_bold = ImageFont.truetype(font_path_bold, 48)
+                    font = ImageFont.truetype(font_path, 38)
+                except:
+                    font_bold = font = ImageFont.load_default()
+                    logger.warning("No Arabic font found. Text may not display correctly. Please add Cairo.ttf or NotoNaskhArabic-Regular.ttf to the script folder.")
 
     # ألوان واضحة
     color_title = (29, 53, 87)
@@ -202,14 +219,22 @@ def create_notification_image(data, logo_path='background.png', output_path='not
     color_percent = (230, 57, 70)
     color_time = (120, 120, 120)
 
+    # خلفية شفافة للنص
+    rect_x0, rect_y0 = 40, 60
+    rect_x1, rect_y1 = width - 40, height - 40
+    overlay = Image.new('RGBA', img.size, (255,255,255,0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    overlay_draw.rectangle([rect_x0, rect_y0, rect_x1, rect_y1], fill=(255,255,255,210), outline=(200,200,200,255), width=2)
+    img = Image.alpha_composite(img, overlay)
+    draw = ImageDraw.Draw(img)
+
     # أماكن الكتابة (محاذاة لليمين يدويًا)
-    y_text = 220
-    x_margin = 80
-    spacing = 60
+    y_text = rect_y0 + 20
+    x_margin = 60
+    spacing = 52
     max_text_width = width - 2 * x_margin
 
     def draw_right(text, y, font, fill):
-        # محاولة استخدام textbbox (Pillow >=8.0)، ثم fallback إلى font.getsize
         try:
             if hasattr(draw, 'textbbox'):
                 bbox = draw.textbbox((0, 0), text, font=font)
@@ -219,7 +244,7 @@ def create_notification_image(data, logo_path='background.png', output_path='not
         except Exception:
             text_width = 0
         x = width - x_margin - text_width
-        draw.text((x, y), text, font=font, fill=fill)
+        draw.text((x, y), text, font=font, fill=fill, align="right")
 
     # عنوان
     draw_right("💊 تحديث سعر دواء جديد", y_text, font_bold, color_title)
