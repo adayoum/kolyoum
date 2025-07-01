@@ -140,128 +140,81 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
 
 def create_notification_image(data: Dict[str, Any], logo_path: str = 'background.jpg', output_path: str = 'notification.png'):
     """
-    Creates a professional notification image with Arabic support.
-
-    Args:
-        data: A dictionary containing the notification text data.
-        logo_path: Path to the background logo image.
-        output_path: Path to save the generated image.
+    النسخة النهائية: تنشئ صورة احترافية بخط المراعي وظل للنص بدون مستطيل أبيض.
     """
     width, height = 800, 600
     try:
-        background = Image.open(logo_path).convert('RGBA')
-        # Resize while maintaining aspect ratio (optional, but good practice)
-        background.thumbnail((width, height))
-        bg_w, bg_h = background.size
-        # Create a new canvas and paste the background in the center
-        img = Image.new('RGBA', (width, height), (255, 255, 255, 255))
-        img.paste(background, ((width - bg_w) // 2, (height - bg_h) // 2))
-
+        img = Image.open(logo_path).convert('RGB').resize((width, height))
+    except FileNotFoundError:
+        logger.error(f"CRITICAL: لم يتم العثور على ملف الشعار '{logo_path}'. سيتم استخدام خلفية بيضاء.")
+        img = Image.new('RGB', (width, height), (255, 255, 255))
     except Exception as e:
-        logger.error(f"Could not open background image at {logo_path}: {e}")
-        img = Image.new('RGBA', (width, height), (240, 240, 240, 255))
+        logger.error(f"An error occurred while opening the background image: {e}")
+        img = Image.new('RGB', (width, height), (255, 255, 255))
 
-    # --- Create a semi-transparent overlay for text readability ---
-    overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
-    draw_overlay = ImageDraw.Draw(overlay)
-    rect_margin = 40
-    rect_radius = 20
-    draw_overlay.rounded_rectangle(
-        (rect_margin, rect_margin, width - rect_margin, height - rect_margin),
-        radius=rect_radius,
-        fill=(255, 255, 255, 235), # White with ~92% opacity
-        outline=(200, 200, 200, 150),
-        width=2
-    )
-    img = Image.alpha_composite(img, overlay)
     draw = ImageDraw.Draw(img)
 
-    # --- Font and Color Setup ---
+    # --- إعدادات الخطوط والألوان (باستخدام خط المراعي) ---
     try:
-        font_main_bold = ImageFont.truetype("Arial", 38, encoding='unic')
-        font_main_regular = ImageFont.truetype("Arial", 32, encoding='unic')
-        font_price = ImageFont.truetype("Arial", 55, encoding='unic')
-        font_footer = ImageFont.truetype("Arial", 24, encoding='unic')
+        # بناء مسار مطلق لملفات الخطوط لضمان العثور عليها
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        font_regular = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 36)
+        font_bold = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 42)
+        font_price = ImageFont.truetype(os.path.join(base_path, 'Almarai-ExtraBold.ttf'), 60)
+        font_footer = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 26)
+        logger.info("تم تحميل خط المراعي بنجاح.")
     except IOError:
-        logger.warning("Arial font not found. Using default font. Arabic text might not render correctly.")
-        font_main_bold = ImageFont.load_default()
-        font_main_regular = ImageFont.load_default()
-        font_price = ImageFont.load_default()
-        font_footer = ImageFont.load_default()
+        logger.critical("خطأ فادح: لم يتم العثور على خطوط المراعي! تأكد من وجود ملفات .ttf بجانب ملف الكود.")
+        # استخدام الخط الافتراضي كحل بديل أخير
+        font_regular, font_bold, font_price, font_footer = (ImageFont.load_default(),) * 4
 
-    color_title = (20, 40, 80)      # Dark Blue
-    color_text = (50, 50, 50)         # Dark Gray
-    color_new_price = (217, 48, 37)   # Red
-    color_old_price = (110, 110, 110) # Medium Gray
-    color_increase = (28, 153, 83)    # Green
-    color_decrease = (217, 48, 37)    # Red
-    color_footer = (150, 150, 150)    # Light Gray
+    # --- ألوان محسنة للرسم على الصورة مباشرة ---
+    color_text_light = (255, 255, 255)
+    color_shadow = (0, 0, 0)
+    color_new_price = (255, 60, 60)
+    color_increase = (60, 255, 120)
+    color_decrease = (255, 60, 60)
+    
+    # --- منطق رسم النصوص مع الظل ---
+    center_x = width / 2
+    current_y = 120
+    shadow_offset = 2
 
-    # --- Text Drawing Logic ---
-    right_margin = 75
-    current_y = 70
+    def draw_text_center_with_shadow(text: str, y_pos: int, font: ImageFont.FreeTypeFont, fill_color: Tuple[int, int, int], align: str = 'center'):
+        """ترسم النص في المنتصف مع ظل أسود لزيادة الوضوح."""
+        # رسم الظل
+        draw.text((center_x + shadow_offset, y_pos + shadow_offset), text, font=font, fill=color_shadow, anchor='ms', align=align)
+        # رسم النص الأساسي
+        draw.text((center_x, y_pos), text, font=font, fill=fill_color, anchor='ms', align=align)
 
-    def draw_text_right(text: str, y_pos: int, font: ImageFont.FreeTypeFont, fill: Tuple[int, int, int]):
-        """Helper to draw right-aligned text."""
-        bbox = draw.textbbox((0, 0), text, font=font, anchor='ra')
-        text_width = bbox[2] - bbox[0]
-        x_pos = width - right_margin
-        draw.text((x_pos, y_pos), text, font=font, fill=fill, anchor='ra', align='right')
-
-    # Title
-    draw_text_right("تحديث سعر دواء", current_y, font_main_bold, color_title)
-    current_y += 60
-    draw.line([(right_margin, current_y), (width - right_margin, current_y)], fill=(220, 220, 220), width=2)
-    current_y += 30
-
-    # Drug Info
-    draw_text_right(f"{data['name_ar']}", current_y, font_main_bold, color_text)
-    current_y += 45
+    # --- رسم معلومات الدواء ---
+    draw_text_center_with_shadow(f"{data['name_ar']}", current_y, font_bold, color_text_light)
+    current_y += 55
     if data.get('name_en'):
-        draw_text_right(f"{data['name_en']}", current_y, font_main_regular, color_text)
-        current_y += 45
+        draw_text_center_with_shadow(f"{data['name_en']}", current_y, font_regular, color_text_light)
+        current_y += 50
     
-    draw_text_right(f"الشكل الدوائي: {data['dosage_form']}", current_y, font_main_regular, color_text)
-    current_y += 45
-    
-    # Price Section
-    current_y += 20
-    draw_text_right("السعر الجديد", current_y, font_main_regular, color_text)
-    current_y += 75
-    draw_text_right(f"{data['new_price']} جنيه", current_y, font_price, color_new_price)
-    current_y += 50
-    
-    # Old Price and Percentage
-    price_change_text = f"السعر السابق: {data['old_price']} جنيه  |  نسبة التغيير: {data['percent']}"
+    # --- قسم الأسعار ---
+    current_y += 60 # مسافة إضافية قبل السعر
+    draw_text_center_with_shadow("السعر الجديد", current_y, font_bold, color_text_light)
+    current_y += 85
+    draw_text_center_with_shadow(f"{data['new_price']} جنيه", current_y, font_price, color_new_price)
+    current_y += 65
+
+    # --- السعر القديم والنسبة ---
     percent_color = color_increase if '%' in data['percent'] and data['percent'].startswith('+') else color_decrease
-    
-    # To color the percentage part differently, we draw it in two parts
-    old_price_part = f"السعر السابق: {data['old_price']} جنيه  |  "
-    percent_part = f"نسبة التغيير: {data['percent']}"
-    
-    percent_bbox = draw.textbbox((0,0), percent_part, font=font_main_regular, anchor='ra')
-    percent_width = percent_bbox[2] - percent_bbox[0]
-    
-    draw_text_right(percent_part, current_y, font_main_regular, percent_color)
-    draw.text(
-        (width - right_margin - percent_width, current_y),
-        old_price_part,
-        font=font_main_regular,
-        fill=color_old_price,
-        anchor='ra',
-        align='right'
-    )
+    price_change_text = f"السعر السابق: {data['old_price']} جنيه  |  نسبة التغيير: {data['percent']}"
+    draw_text_center_with_shadow(price_change_text, current_y, font_regular, percent_color)
     current_y += 60
 
-    # Footer
-    draw.line([(right_margin, current_y), (width - right_margin, current_y)], fill=(220, 220, 220), width=2)
-    current_y += 20
-    draw_text_right(data['timestamp'], current_y, font_footer, color_footer)
+    # --- البيانات في الأسفل ---
+    draw_text_center_with_shadow(f"Barcode: {data.get('barcode', 'N/A')}", current_y, font_footer, color_text_light)
+    current_y += 35
+    draw_text_center_with_shadow(data['timestamp'], current_y, font_footer, color_text_light)
 
-    # --- Save the final image ---
-    final_image = img.convert('RGB')
-    final_image.save(output_path, "PNG", quality=95, optimize=True)
-    logger.info(f"Notification image saved to {output_path}")
+    # --- حفظ الصورة النهائية ---
+    img.save(output_path, "PNG", quality=95, optimize=True)
+    logger.info(f"تم حفظ الصورة بنجاح في '{output_path}'")
     return output_path
 
 
@@ -359,10 +312,8 @@ async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_clien
                     try:
                         image_data = get_notification_image_data({'previous': last_db_record, 'current': drug_data})
                         image_path = f"notification_{drug_data['ID']}.png"
-                        # Use the new improved function to create the image
                         create_notification_image(image_data, logo_path='background.jpg', output_path=image_path)
                         notification_sent = await send_telegram_image(image_path, telegram_client)
-                        # Clean up the generated image file
                         if os.path.exists(image_path):
                             os.remove(image_path)
                     except Exception as e:
@@ -398,7 +349,7 @@ async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_clien
                 await asyncio.to_thread(insert_query)
                 logger.info(f"DB Upload: Batch {i//BATCH_INSERT_SIZE+1} ({len(batch)} records) uploaded successfully.")
             except Exception as e:
-                logger.critical(f"CRITICAL ERROR: DB Upload failed for batch {i//BATCH_INSERT_SIZE+1}. Some notifications may have been sent without a DB update. Error: {e}")
+                logger.critical(f"CRITICAL ERROR: DB Upload failed for batch {i//BATCH_INSERT_SIZE+1}. Error: {e}")
 
     except Exception as e:
         logger.exception(f"An unhandled error occurred during process_and_commit_changes: {e}")
@@ -424,8 +375,8 @@ def get_notification_image_data(change_info: Dict[str, Any]) -> Dict[str, Any]:
     except (InvalidOperation, TypeError):
         percent_str = "N/A"
 
-    cairo_tz = datetime.timezone(datetime.timedelta(hours=3))
-    timestamp = datetime.datetime.now(cairo_tz).strftime('%d-%m-%Y – %I:%M %p  🇪🇬')
+    cairo_tz = datetime.timezone(datetime.timedelta(hours=2)) # EEST Timezone
+    timestamp = datetime.datetime.now(cairo_tz).strftime('%d-%m-%Y – %I:%M %p')
 
     return {
         'name_ar': curr_record.get('Commercial Name (Arabic)', "اسم غير متوفر"),
