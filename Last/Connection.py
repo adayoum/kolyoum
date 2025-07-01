@@ -143,31 +143,35 @@ def format_change_message(change_info: Dict[str, Any]) -> str:
     name_en = curr_record.get('Commercial Name (English)', "Name not available")
     dosage_form = curr_record.get('Dosage Form', "غير محدد")
     barcode = curr_record.get('Barcode', "لا يوجد")
-    old_price_val, new_price_val = prev_record.get('current_price'), curr_record.get('Current Price')
+    old_price_val = prev_record.get('current_price')
+    new_price_val = curr_record.get('Current Price')
     old_price_str = f"{old_price_val:g}" if old_price_val is not None else "N/A"
     new_price_str = f"{new_price_val:g}" if new_price_val is not None else "N/A"
-    header, price_line = "✨ **تحديث سعر جديد** ✨", ""
     try:
-        if old_price_val is not None and new_price_val is not None:
+        if old_price_val and new_price_val:
             old_p, new_p = Decimal(str(old_price_val)), Decimal(str(new_price_val))
-            if new_p > old_p:
-                change = ((new_p - old_p) / old_p) * 100 if old_p > 0 else float('inf')
-                price_line = (f"⬆️ **السعر ارتفع:** من {old_price_str} إلى **{new_price_str}** جنيه\n"
-                              f"    نسبة الزيادة: `+{change:.2f}%`")
-            elif new_p < old_p:
-                change = ((old_p - new_p) / old_p) * 100 if old_p > 0 else float('inf')
-                price_line = (f"⬇️ **السعر انخفض:** من {old_price_str} إلى **{new_price_str}** جنيه\n"
-                              f"    نسبة النقص: `-{change:.2f}%`")
-        else: price_line = f"🔄 **السعر تغير:** من {old_price_str} إلى **{new_price_str}** جنيه"
-    except (ValueError, TypeError, InvalidOperation):
-        price_line = f"🔄 **السعر تغير:** من {old_price_str} إلى **{new_price_str}** جنيه"
+            percent = ((new_p - old_p) / old_p) * 100 if old_p > 0 else 0
+            percent_str = f"{percent:+.2f}%"
+        else:
+            percent_str = "N/A"
+    except Exception:
+        percent_str = "N/A"
     cairo_tz = datetime.timezone(datetime.timedelta(hours=3))
-    timestamp = datetime.datetime.now(cairo_tz).strftime('%Y-%m-%d الساعة %I:%M %p (توقيت القاهرة)')
-    return (f"{header}\n\n**الاسم:** {name_ar}\n**Name:** {name_en}\n"
-            "-----------------------------------\n"
-            f"{price_line}\n-----------------------------------\n"
-            f"🔍 **تفاصيل إضافية:**\n   - الشكل الدوائي: {dosage_form}\n   - الباركود: `{barcode}`\n\n"
-            f"🗓️ **وقت التحديث:** {timestamp}")
+    timestamp = datetime.datetime.now(cairo_tz).strftime('%d-%m-%Y – %I:%M %p (بتوقيت القاهرة 🇪🇬)')
+    # رسالة منسقة بأسلوب تليجرام (HTML)
+    return (
+        "<b>💊 تحديث سعر دواء جديد</b>\n\n"
+        f"🧾 <b>الاسم التجاري:</b> {name_ar}\n"
+        f"💬 <b>الاسم الإنجليزي:</b> {name_en}\n"
+        f"💊 <b>الشكل الدوائي:</b> {dosage_form}\n"
+        f"🔢 <b>الباركود:</b> <code>{barcode}</code>\n\n"
+        "<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n"
+        f"📈 <b>السعر الجديد:</b> <span class='tg-spoiler'>{new_price_str} جنيه</span>\n"
+        f"📉 <b>السعر السابق:</b> {old_price_str} جنيه\n"
+        f"📊 <b>نسبة الزيادة:</b> <b>{percent_str}</b>\n"
+        "<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n"
+        f"🕒 <i>{timestamp}</i>"
+    )
 
 async def send_telegram_message(message: str, client: TelegramClient) -> bool:
     target_channel_str = os.environ.get("TARGET_CHANNEL")
@@ -176,7 +180,7 @@ async def send_telegram_message(message: str, client: TelegramClient) -> bool:
         return False
     try:
         target_channel = int(target_channel_str) if target_channel_str.lstrip('-').isdigit() else target_channel_str
-        await client.send_message(target_channel, message, parse_mode='md')
+        await client.send_message(target_channel, message, parse_mode='html')
         logger.info(f"Notification sent successfully to channel {target_channel}.")
         return True
     except Exception as e:
