@@ -140,7 +140,7 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
 
 def create_notification_image(data: dict, logo_path: str = 'background.png', output_path: str = 'notification.png'):
     """
-    ينشئ صورة إشعار احترافية فوق الخلفية المرفقة مع دعم الخط العربي ومستطيل شفاف خلف النصوص.
+    ينشئ صورة إشعار احترافية فوق الخلفية المرفقة مع شريط سفلي شفاف وتنسيق نصوص احترافي.
     """
     from PIL import Image, ImageDraw, ImageFont
     import os
@@ -157,66 +157,70 @@ def create_notification_image(data: dict, logo_path: str = 'background.png', out
 
     # تحميل خط عربي واضح
     try:
-        font_regular = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 36)
-        font_bold = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 44)
+        font_arabic_bold = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 44)
+        font_arabic = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 32)
+        font_arabic_small = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 26)
         font_price = ImageFont.truetype(os.path.join(base_path, 'Almarai-ExtraBold.ttf'), 60)
-        font_footer = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 26)
     except Exception:
-        logger.warning("لم يتم العثور على خط Almarai. سيتم استخدام الخط الافتراضي وقد لا تظهر العربية بشكل صحيح.")
-        font_regular = font_bold = font_price = font_footer = ImageFont.load_default()
+        try:
+            font_arabic_bold = ImageFont.truetype(os.path.join(base_path, 'tahoma.ttf'), 44)
+            font_arabic = ImageFont.truetype(os.path.join(base_path, 'tahoma.ttf'), 32)
+            font_arabic_small = ImageFont.truetype(os.path.join(base_path, 'tahoma.ttf'), 26)
+            font_price = ImageFont.truetype(os.path.join(base_path, 'tahoma.ttf'), 60)
+        except Exception:
+            font_arabic_bold = font_arabic = font_arabic_small = font_price = ImageFont.load_default()
+            logger.warning("لم يتم العثور على خط عربي واضح. سيتم استخدام الخط الافتراضي وقد لا تظهر العربية بشكل صحيح.")
 
     # إعداد ألوان النص والظل
-    color_text = (255, 255, 255)
+    color_white = (255, 255, 255)
     color_shadow = (0, 0, 0, 180)
     color_new_price = (255, 59, 48)
     color_increase = (0, 200, 83)
     color_decrease = (255, 59, 48)
+    color_label = (200, 200, 200)
+    color_value = (255, 255, 255)
 
-    # رسم مستطيل شفاف خلف النصوص في منتصف الصورة
-    rect_w, rect_h = 700, 370
-    rect_x0 = (width - rect_w) // 2
-    rect_y0 = (height - rect_h) // 2
-    rect_x1 = rect_x0 + rect_w
-    rect_y1 = rect_y0 + rect_h
+    # رسم شريط سفلي شفاف فقط (وليس في منتصف الصورة)
+    bar_height = 270
+    bar_y0 = height - bar_height
     overlay = Image.new('RGBA', img.size, (255,255,255,0))
     overlay_draw = ImageDraw.Draw(overlay)
-    overlay_draw.rectangle([rect_x0, rect_y0, rect_x1, rect_y1], fill=(0,0,0,170), outline=(255,255,255,80), width=2)
+    overlay_draw.rectangle([0, bar_y0, width, height], fill=(30,30,30,200))
     img = Image.alpha_composite(img, overlay)
     draw = ImageDraw.Draw(img)
 
-    # منطق رسم النصوص في المنتصف مع ظل
-    center_x = width // 2
-    current_y = rect_y0 + 30
-    shadow_offset = 2
-    def draw_centered(text, y, font, fill, shadow=True):
+    # منطق رسم النصوص مع ظل
+    def draw_text(text, xy, font, fill, anchor, shadow=True):
+        x, y = xy
         if shadow:
-            draw.text((center_x+shadow_offset, y+shadow_offset), text, font=font, fill=color_shadow, anchor='mm', align='center')
-        draw.text((center_x, y), text, font=font, fill=fill, anchor='mm', align='center')
+            draw.text((x+2, y+2), text, font=font, fill=color_shadow, anchor=anchor)
+        draw.text((x, y), text, font=font, fill=fill, anchor=anchor)
 
-    # --- رسم معلومات الدواء ---
-    draw_centered(f"{data['name_ar']}", current_y, font_bold, color_text)
-    current_y += 48
+    # --- ترتيب النصوص داخل الشريط السفلي ---
+    margin_x = 40
+    y = bar_y0 + 18
+    # اسم الدواء (عربي) يمين الشريط
+    draw_text(data['name_ar'], (width-margin_x, y), font_arabic_bold, color_white, anchor='ra')
+    y += 44
+    # الاسم الإنجليزي والشكل الدوائي أسفل الاسم العربي
     if data.get('name_en'):
-        draw_centered(f"{data['name_en']}", current_y, font_regular, color_text)
-        current_y += 38
+        draw_text(data['name_en'], (width-margin_x, y), font_arabic, color_label, anchor='ra')
+        y += 32
     if data.get('dosage_form'):
-        draw_centered(f"{data['dosage_form']}", current_y, font_regular, color_text)
-        current_y += 38
-    # --- السعر الجديد ---
-    current_y += 18
-    draw_centered("السعر الجديد", current_y, font_bold, color_text)
-    current_y += 50
-    draw_centered(f"{data['new_price']} جنيه", current_y, font_price, color_new_price)
-    current_y += 48
-    # --- السعر القديم والنسبة ---
+        draw_text(data['dosage_form'], (width-margin_x, y), font_arabic_small, color_label, anchor='ra')
+        y += 28
+    # السعر الجديد في منتصف الشريط
+    y_price = bar_y0 + 30
+    draw_text("السعر الجديد", (width//2, y_price), font_arabic, color_label, anchor='ma')
+    draw_text(f"{data['new_price']} جنيه", (width//2, y_price+38), font_price, color_new_price, anchor='ma')
+    # السعر السابق والنسبة أسفل السعر الجديد
     percent_color = color_increase if '%' in data['percent'] and data['percent'].startswith('+') else color_decrease
     price_change_text = f"السعر السابق: {data['old_price']} جنيه  |  نسبة التغيير: {data['percent']}"
-    draw_centered(price_change_text, current_y, font_regular, percent_color)
-    current_y += 38
-    # --- الباركود والتاريخ ---
-    draw_centered(f"Barcode: {data.get('barcode', 'N/A')}", current_y, font_footer, color_text, shadow=False)
-    current_y += 28
-    draw_centered(data['timestamp'], current_y, font_footer, color_text, shadow=False)
+    draw_text(price_change_text, (width//2, y_price+98), font_arabic, percent_color, anchor='ma')
+    # الباركود والتاريخ يسار الشريط
+    y_left = bar_y0 + 30
+    draw_text(f"Barcode: {data.get('barcode', 'N/A')}", (margin_x, y_left), font_arabic_small, color_label, anchor='la')
+    draw_text(data['timestamp'], (margin_x, y_left+32), font_arabic_small, color_label, anchor='la')
 
     img = img.convert('RGB')
     img.save(output_path, 'PNG', quality=95, optimize=True)
@@ -416,7 +420,8 @@ async def main():
         logger.warning("Telegram credentials not fully set. Notifications disabled.")
 
     if not API_URL:
-        logger.error("API_URL is not set. Cannot fetch drug data. Exiting."); return
+        logger.error("API_URL is not set. Cannot fetch drug data. Exiting.")
+        return
 
     all_raw_drugs = []
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
@@ -427,29 +432,30 @@ async def main():
             logger.info(f"Launching {len(tasks)} tasks to fetch data...")
             results = await asyncio.gather(*tasks)
             for _, drugs_from_batch in results:
-                if drugs_from_batch: all_raw_drugs.extend(drugs_from_batch)
+                if drugs_from_batch:
+                    all_raw_drugs.extend(drugs_from_batch)
 
         logger.info(f"Finished fetching API data. Found {len(all_raw_drugs)} raw records total.")
-        
+
         if all_raw_drugs:
             mapped_drugs = [map_api_record_to_internal(d) for d in all_raw_drugs if d]
             valid_mapped_drugs = [d for d in mapped_drugs if d]
             unique_drugs_dict = {d['ID']: d for d in valid_mapped_drugs if d.get('ID')}
             unique_drugs_list = list(unique_drugs_dict.values())
             logger.info(f"Processed into {len(unique_drugs_list)} unique drugs.")
-            
+
             if unique_drugs_list:
                 await process_and_commit_changes(unique_drugs_list, telegram_client_instance)
         else:
             logger.info("No drug data was fetched from the API across all queries.")
-            
+
     except Exception as e:
         logger.exception(f"An unhandled error occurred in the main execution loop: {e}")
     finally:
         if telegram_client_instance and telegram_client_instance.is_connected():
             await telegram_client_instance.disconnect()
             logger.info("Telegram client disconnected.")
-        execution_time = time. monotonic() - script_start_time
+        execution_time = time.monotonic() - script_start_time
         logger.info(f"Script finished execution in {execution_time:.2f} seconds.")
 
 if __name__ == "__main__":
