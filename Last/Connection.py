@@ -138,84 +138,88 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
 
 # --- Telegram Notification Logic ---
 
-def create_notification_image(data: Dict[str, Any], logo_path: str = 'background.jpg', output_path: str = 'notification.png'):
+def create_notification_image(data: dict, logo_path: str = 'background.png', output_path: str = 'notification.png'):
     """
-    النسخة النهائية: تنشئ صورة احترافية بخلفية الشعار وألوان محسنة.
+    ينشئ صورة إشعار احترافية فوق الخلفية المرفقة مع دعم الخط العربي ومستطيل شفاف خلف النصوص.
     """
+    from PIL import Image, ImageDraw, ImageFont
+    import os
     width, height = 800, 600
     base_path = os.path.dirname(os.path.abspath(__file__))
-    
+    # تحميل الخلفية الأصلية وتغيير حجمها
     try:
-        # بناء مسار مطلق لملف الخلفية لضمان العثور عليه
         full_logo_path = os.path.join(base_path, logo_path)
-        img = Image.open(full_logo_path).convert('RGB').resize((width, height))
-        logger.info(f"تم تحميل خلفية الشعار بنجاح من: {full_logo_path}")
-    except FileNotFoundError:
-        logger.error(f"CRITICAL: لم يتم العثور على ملف الشعار '{logo_path}'. تأكد من وجوده بجانب ملف الكود.")
-        img = Image.new('RGB', (width, height), (255, 255, 255)) # Fallback to white background
+        img = Image.open(full_logo_path).convert('RGBA').resize((width, height))
     except Exception as e:
-        logger.error(f"An error occurred while opening the background image: {e}")
-        img = Image.new('RGB', (width, height), (255, 255, 255))
-
+        logger.error(f"Could not open background image: {e}")
+        img = Image.new('RGBA', (width, height), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    # --- إعدادات الخطوط والألوان (باستخدام خط المراعي) ---
+    # تحميل خط عربي واضح
     try:
         font_regular = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 36)
-        font_bold = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 42)
+        font_bold = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 44)
         font_price = ImageFont.truetype(os.path.join(base_path, 'Almarai-ExtraBold.ttf'), 60)
         font_footer = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 26)
-        logger.info("تم تحميل خط المراعي بنجاح.")
-    except IOError:
-        logger.critical("خطأ فادح: لم يتم العثور على خطوط المراعي! تأكد من وجود ملفات .ttf بجانب ملف الكود.")
-        font_regular, font_bold, font_price, font_footer = (ImageFont.load_default(),) * 4
+    except Exception:
+        logger.warning("لم يتم العثور على خط Almarai. سيتم استخدام الخط الافتراضي وقد لا تظهر العربية بشكل صحيح.")
+        font_regular = font_bold = font_price = font_footer = ImageFont.load_default()
 
-    # --- ألوان محسنة للرسم على شعار DrugShift ---
-    color_text_light = (255, 255, 255)
-    color_shadow = (0, 0, 0)
-    color_new_price = (255, 59, 48)   # لون أحمر ساطع
-    color_increase = (0, 200, 83)     # لون أخضر زاهي
-    color_decrease = (255, 59, 48)    # نفس لون السعر الجديد
-    
-    # --- منطق رسم النصوص مع الظل ---
-    center_x = width / 2
-    current_y = 120
+    # إعداد ألوان النص والظل
+    color_text = (255, 255, 255)
+    color_shadow = (0, 0, 0, 180)
+    color_new_price = (255, 59, 48)
+    color_increase = (0, 200, 83)
+    color_decrease = (255, 59, 48)
+
+    # رسم مستطيل شفاف خلف النصوص في منتصف الصورة
+    rect_w, rect_h = 700, 370
+    rect_x0 = (width - rect_w) // 2
+    rect_y0 = (height - rect_h) // 2
+    rect_x1 = rect_x0 + rect_w
+    rect_y1 = rect_y0 + rect_h
+    overlay = Image.new('RGBA', img.size, (255,255,255,0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    overlay_draw.rectangle([rect_x0, rect_y0, rect_x1, rect_y1], fill=(0,0,0,170), outline=(255,255,255,80), width=2)
+    img = Image.alpha_composite(img, overlay)
+    draw = ImageDraw.Draw(img)
+
+    # منطق رسم النصوص في المنتصف مع ظل
+    center_x = width // 2
+    current_y = rect_y0 + 30
     shadow_offset = 2
-
-    def draw_text_center_with_shadow(text: str, y_pos: int, font: ImageFont.FreeTypeFont, fill_color: Tuple[int, int, int]):
-        """ترسم النص في المنتصف مع ظل أسود لزيادة الوضوح."""
-        # رسم الظل
-        draw.text((center_x + shadow_offset, y_pos + shadow_offset), text, font=font, fill=color_shadow, anchor='ms', align='center')
-        # رسم النص الأساسي
-        draw.text((center_x, y_pos), text, font=font, fill=fill_color, anchor='ms', align='center')
+    def draw_centered(text, y, font, fill, shadow=True):
+        if shadow:
+            draw.text((center_x+shadow_offset, y+shadow_offset), text, font=font, fill=color_shadow, anchor='mm', align='center')
+        draw.text((center_x, y), text, font=font, fill=fill, anchor='mm', align='center')
 
     # --- رسم معلومات الدواء ---
-    draw_text_center_with_shadow(f"{data['name_ar']}", current_y, font_bold, color_text_light)
-    current_y += 55
+    draw_centered(f"{data['name_ar']}", current_y, font_bold, color_text)
+    current_y += 48
     if data.get('name_en'):
-        draw_text_center_with_shadow(f"{data['name_en']}", current_y, font_regular, color_text_light)
-        current_y += 50
-    
-    # --- قسم الأسعار ---
-    current_y += 60 # مسافة إضافية قبل السعر
-    draw_text_center_with_shadow("السعر الجديد", current_y, font_bold, color_text_light)
-    current_y += 85
-    draw_text_center_with_shadow(f"{data['new_price']} جنيه", current_y, font_price, color_new_price)
-    current_y += 65
-
+        draw_centered(f"{data['name_en']}", current_y, font_regular, color_text)
+        current_y += 38
+    if data.get('dosage_form'):
+        draw_centered(f"{data['dosage_form']}", current_y, font_regular, color_text)
+        current_y += 38
+    # --- السعر الجديد ---
+    current_y += 18
+    draw_centered("السعر الجديد", current_y, font_bold, color_text)
+    current_y += 50
+    draw_centered(f"{data['new_price']} جنيه", current_y, font_price, color_new_price)
+    current_y += 48
     # --- السعر القديم والنسبة ---
     percent_color = color_increase if '%' in data['percent'] and data['percent'].startswith('+') else color_decrease
     price_change_text = f"السعر السابق: {data['old_price']} جنيه  |  نسبة التغيير: {data['percent']}"
-    draw_text_center_with_shadow(price_change_text, current_y, font_regular, percent_color)
-    current_y += 60
+    draw_centered(price_change_text, current_y, font_regular, percent_color)
+    current_y += 38
+    # --- الباركود والتاريخ ---
+    draw_centered(f"Barcode: {data.get('barcode', 'N/A')}", current_y, font_footer, color_text, shadow=False)
+    current_y += 28
+    draw_centered(data['timestamp'], current_y, font_footer, color_text, shadow=False)
 
-    # --- البيانات في الأسفل ---
-    draw_text_center_with_shadow(f"Barcode: {data.get('barcode', 'N/A')}", current_y, font_footer, color_text_light)
-    current_y += 35
-    draw_text_center_with_shadow(data['timestamp'], current_y, font_footer, color_text_light)
-
-    # --- حفظ الصورة النهائية ---
-    img.save(output_path, "PNG", quality=95, optimize=True)
+    img = img.convert('RGB')
+    img.save(output_path, 'PNG', quality=95, optimize=True)
     logger.info(f"تم حفظ الصورة بنجاح في '{output_path}'")
     return output_path
 
