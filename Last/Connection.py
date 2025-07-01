@@ -140,7 +140,7 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
 
 def create_notification_image(data: dict, logo_path: str = 'background.png', output_path: str = 'notification.png'):
     """
-    ينشئ صورة إشعار احترافية فوق الخلفية المرفقة مع شريط سفلي شفاف وتنسيق نصوص احترافي.
+    ينشئ صورة إشعار احترافية فوق الخلفية مباشرة بدون أي مستطيلات أو مربعات، مع توزيع النصوص بشكل جمالي واحترافي.
     """
     from PIL import Image, ImageDraw, ImageFont
     import os
@@ -177,50 +177,40 @@ def create_notification_image(data: dict, logo_path: str = 'background.png', out
     color_new_price = (255, 59, 48)
     color_increase = (0, 200, 83)
     color_decrease = (255, 59, 48)
-    color_label = (200, 200, 200)
+    color_label = (220, 220, 220)
     color_value = (255, 255, 255)
 
-    # رسم شريط سفلي شفاف فقط (وليس في منتصف الصورة)
-    bar_height = 270
-    bar_y0 = height - bar_height
-    overlay = Image.new('RGBA', img.size, (255,255,255,0))
-    overlay_draw = ImageDraw.Draw(overlay)
-    overlay_draw.rectangle([0, bar_y0, width, height], fill=(30,30,30,200))
-    img = Image.alpha_composite(img, overlay)
-    draw = ImageDraw.Draw(img)
-
-    # منطق رسم النصوص مع ظل
+    # منطق رسم النصوص مع ظل خفيف
     def draw_text(text, xy, font, fill, anchor, shadow=True):
         x, y = xy
         if shadow:
             draw.text((x+2, y+2), text, font=font, fill=color_shadow, anchor=anchor)
         draw.text((x, y), text, font=font, fill=fill, anchor=anchor)
 
-    # --- ترتيب النصوص داخل الشريط السفلي ---
-    margin_x = 40
-    y = bar_y0 + 18
-    # اسم الدواء (عربي) يمين الشريط
-    draw_text(data['name_ar'], (width-margin_x, y), font_arabic_bold, color_white, anchor='ra')
-    y += 44
+    # --- توزيع النصوص بشكل جمالي فوق الخلفية مباشرة ---
+    # اسم الدواء (عربي) أعلى الصورة في المنتصف
+    y = 60
+    draw_text(data['name_ar'], (width//2, y), font_arabic_bold, color_white, anchor='ma')
+    y += 48
     # الاسم الإنجليزي والشكل الدوائي أسفل الاسم العربي
     if data.get('name_en'):
-        draw_text(data['name_en'], (width-margin_x, y), font_arabic, color_label, anchor='ra')
+        draw_text(data['name_en'], (width//2, y), font_arabic, color_label, anchor='ma')
         y += 32
     if data.get('dosage_form'):
-        draw_text(data['dosage_form'], (width-margin_x, y), font_arabic_small, color_label, anchor='ra')
+        draw_text(data['dosage_form'], (width//2, y), font_arabic_small, color_label, anchor='ma')
         y += 28
-    # السعر الجديد في منتصف الشريط
-    y_price = bar_y0 + 30
+    # السعر الجديد في منتصف الصورة
+    y_price = height//2 - 30
     draw_text("السعر الجديد", (width//2, y_price), font_arabic, color_label, anchor='ma')
     draw_text(f"{data['new_price']} جنيه", (width//2, y_price+38), font_price, color_new_price, anchor='ma')
     # السعر السابق والنسبة أسفل السعر الجديد
     percent_color = color_increase if '%' in data['percent'] and data['percent'].startswith('+') else color_decrease
     price_change_text = f"السعر السابق: {data['old_price']} جنيه  |  نسبة التغيير: {data['percent']}"
     draw_text(price_change_text, (width//2, y_price+98), font_arabic, percent_color, anchor='ma')
-    # الباركود والتاريخ يسار الشريط
-    y_left = bar_y0 + 30
-    draw_text(f"Barcode: {data.get('barcode', 'N/A')}", (margin_x, y_left), font_arabic_small, color_label, anchor='la')
-    draw_text(data['timestamp'], (margin_x, y_left+32), font_arabic_small, color_label, anchor='la')
+    # الباركود والتاريخ أسفل الصورة في المنتصف
+    y_footer = height - 60
+    draw_text(f"Barcode: {data.get('barcode', 'N/A')}", (width//2, y_footer), font_arabic_small, color_label, anchor='ma', shadow=False)
+    draw_text(data['timestamp'], (width//2, y_footer+28), font_arabic_small, color_label, anchor='ma', shadow=False)
 
     img = img.convert('RGB')
     img.save(output_path, 'PNG', quality=95, optimize=True)
