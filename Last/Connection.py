@@ -140,14 +140,19 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
 
 def create_notification_image(data: Dict[str, Any], logo_path: str = 'background.jpg', output_path: str = 'notification.png'):
     """
-    النسخة النهائية: تنشئ صورة احترافية بخط المراعي وظل للنص بدون مستطيل أبيض.
+    النسخة النهائية: تنشئ صورة احترافية بخلفية الشعار وألوان محسنة.
     """
     width, height = 800, 600
+    base_path = os.path.dirname(os.path.abspath(__file__))
+    
     try:
-        img = Image.open(logo_path).convert('RGB').resize((width, height))
+        # بناء مسار مطلق لملف الخلفية لضمان العثور عليه
+        full_logo_path = os.path.join(base_path, logo_path)
+        img = Image.open(full_logo_path).convert('RGB').resize((width, height))
+        logger.info(f"تم تحميل خلفية الشعار بنجاح من: {full_logo_path}")
     except FileNotFoundError:
-        logger.error(f"CRITICAL: لم يتم العثور على ملف الشعار '{logo_path}'. سيتم استخدام خلفية بيضاء.")
-        img = Image.new('RGB', (width, height), (255, 255, 255))
+        logger.error(f"CRITICAL: لم يتم العثور على ملف الشعار '{logo_path}'. تأكد من وجوده بجانب ملف الكود.")
+        img = Image.new('RGB', (width, height), (255, 255, 255)) # Fallback to white background
     except Exception as e:
         logger.error(f"An error occurred while opening the background image: {e}")
         img = Image.new('RGB', (width, height), (255, 255, 255))
@@ -156,8 +161,6 @@ def create_notification_image(data: Dict[str, Any], logo_path: str = 'background
 
     # --- إعدادات الخطوط والألوان (باستخدام خط المراعي) ---
     try:
-        # بناء مسار مطلق لملفات الخطوط لضمان العثور عليها
-        base_path = os.path.dirname(os.path.abspath(__file__))
         font_regular = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 36)
         font_bold = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 42)
         font_price = ImageFont.truetype(os.path.join(base_path, 'Almarai-ExtraBold.ttf'), 60)
@@ -165,27 +168,26 @@ def create_notification_image(data: Dict[str, Any], logo_path: str = 'background
         logger.info("تم تحميل خط المراعي بنجاح.")
     except IOError:
         logger.critical("خطأ فادح: لم يتم العثور على خطوط المراعي! تأكد من وجود ملفات .ttf بجانب ملف الكود.")
-        # استخدام الخط الافتراضي كحل بديل أخير
         font_regular, font_bold, font_price, font_footer = (ImageFont.load_default(),) * 4
 
-    # --- ألوان محسنة للرسم على الصورة مباشرة ---
+    # --- ألوان محسنة للرسم على شعار DrugShift ---
     color_text_light = (255, 255, 255)
     color_shadow = (0, 0, 0)
-    color_new_price = (255, 60, 60)
-    color_increase = (60, 255, 120)
-    color_decrease = (255, 60, 60)
+    color_new_price = (255, 59, 48)   # لون أحمر ساطع
+    color_increase = (0, 200, 83)     # لون أخضر زاهي
+    color_decrease = (255, 59, 48)    # نفس لون السعر الجديد
     
     # --- منطق رسم النصوص مع الظل ---
     center_x = width / 2
     current_y = 120
     shadow_offset = 2
 
-    def draw_text_center_with_shadow(text: str, y_pos: int, font: ImageFont.FreeTypeFont, fill_color: Tuple[int, int, int], align: str = 'center'):
+    def draw_text_center_with_shadow(text: str, y_pos: int, font: ImageFont.FreeTypeFont, fill_color: Tuple[int, int, int]):
         """ترسم النص في المنتصف مع ظل أسود لزيادة الوضوح."""
         # رسم الظل
-        draw.text((center_x + shadow_offset, y_pos + shadow_offset), text, font=font, fill=color_shadow, anchor='ms', align=align)
+        draw.text((center_x + shadow_offset, y_pos + shadow_offset), text, font=font, fill=color_shadow, anchor='ms', align='center')
         # رسم النص الأساسي
-        draw.text((center_x, y_pos), text, font=font, fill=fill_color, anchor='ms', align=align)
+        draw.text((center_x, y_pos), text, font=font, fill=fill_color, anchor='ms', align='center')
 
     # --- رسم معلومات الدواء ---
     draw_text_center_with_shadow(f"{data['name_ar']}", current_y, font_bold, color_text_light)
@@ -375,7 +377,7 @@ def get_notification_image_data(change_info: Dict[str, Any]) -> Dict[str, Any]:
     except (InvalidOperation, TypeError):
         percent_str = "N/A"
 
-    cairo_tz = datetime.timezone(datetime.timedelta(hours=2)) # EEST Timezone
+    cairo_tz = datetime.timezone(datetime.timedelta(hours=3))
     timestamp = datetime.datetime.now(cairo_tz).strftime('%d-%m-%Y – %I:%M %p')
 
     return {
@@ -443,7 +445,7 @@ async def main():
         if telegram_client_instance and telegram_client_instance.is_connected():
             await telegram_client_instance.disconnect()
             logger.info("Telegram client disconnected.")
-        execution_time = time.monotonic() - script_start_time
+        execution_time = time. monotonic() - script_start_time
         logger.info(f"Script finished execution in {execution_time:.2f} seconds.")
 
 if __name__ == "__main__":
