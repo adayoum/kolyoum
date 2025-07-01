@@ -209,7 +209,15 @@ def create_notification_image(data, logo_path='background.png', output_path='not
     max_text_width = width - 2 * x_margin
 
     def draw_right(text, y, font, fill):
-        text_width, _ = draw.textsize(text, font=font)
+        # محاولة استخدام textbbox (Pillow >=8.0)، ثم fallback إلى font.getsize
+        try:
+            if hasattr(draw, 'textbbox'):
+                bbox = draw.textbbox((0, 0), text, font=font)
+                text_width = bbox[2] - bbox[0]
+            else:
+                text_width, _ = font.getsize(text)
+        except Exception:
+            text_width = 0
         x = width - x_margin - text_width
         draw.text((x, y), text, font=font, fill=fill)
 
