@@ -579,6 +579,40 @@ def get_notification_image_data(change_info: Dict[str, Any]) -> Dict[str, Any]:
         'timestamp': timestamp
     }
 
+def create_notification_message(data: dict) -> str:
+    """
+    ينشئ رسالة نصية احترافية وجذابة لإشعار تغير سعر الدواء.
+    """
+    name_ar = data.get('name_ar', 'اسم غير متوفر')
+    name_en = data.get('name_en', '')
+    new_price = data.get('new_price', 'N/A')
+    old_price = data.get('old_price', 'N/A')
+    percent = data.get('percent', 'N/A')
+    barcode = data.get('barcode', 'غير متوفر')
+    timestamp = data.get('timestamp', '')
+
+    # تحديد السهم واللون حسب نسبة التغيير
+    is_increase = percent.startswith('+')
+    is_decrease = percent.startswith('-')
+    arrow = '⬆️' if is_increase else ('⬇️' if is_decrease else '➡️')
+    percent_color = '🟢' if is_increase else '🔴' if is_decrease else '🟡'
+
+    # بناء الرسالة
+    msg = f"""
+<b>💊 {name_ar}</b>
+{(name_en if name_en and name_en.lower() != 'name not available' else '')}
+
+<b>السعر الجديد:</b> <b>{new_price} ج.م</b> {arrow}
+<b>السعر السابق:</b> {old_price} ج.م
+<b>نسبة التغيير:</b> {percent_color} <b>{percent}</b>
+
+<code>الباركود: {barcode}</code>
+<code>آخر تحديث: {timestamp}</code>
+    """
+    # إزالة سطر فارغ إذا لم يوجد اسم إنجليزي
+    msg = '\n'.join([line for line in msg.splitlines() if line.strip()])
+    return msg
+
 # --- Main Execution ---
 async def main():
     script_start_time = time.monotonic()
