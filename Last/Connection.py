@@ -11,7 +11,7 @@ from supabase import create_client, Client
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 from decimal import Decimal, InvalidOperation
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
 
 # Load environment variables from .env file
 # SECURITY: Never commit your .env file to a public repository.
@@ -140,9 +140,9 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
 
 def create_notification_image(data: dict, logo_path: str = 'background.png', output_path: str = 'notification.png'):
     """
-    ينشئ صورة إشعار احترافية فوق الخلفية الأصلية background.png (بدون أي مستطيلات أو مربعات)، مع توزيع النصوص بشكل جمالي واحترافي.
+    ينشئ صورة إشعار احترافية فوق الخلفية الأصلية background.png مع توزيع النصوص والعناصر بشكل جمالي واحترافي حسب توصيات المستخدم.
     """
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
     import os
     width, height = 800, 600
     base_path = os.path.dirname(os.path.abspath(__file__))
@@ -159,62 +159,84 @@ def create_notification_image(data: dict, logo_path: str = 'background.png', out
         img = Image.new('RGBA', (width, height), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    # تحميل خط عربي واضح
+    # تحميل الخطوط
     try:
-        font_arabic_bold = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 44)
+        font_arabic_bold = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 48)
         font_arabic = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 32)
-        font_arabic_small = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 26)
-        font_price = ImageFont.truetype(os.path.join(base_path, 'Almarai-ExtraBold.ttf'), 60)
+        font_arabic_small = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 22)
+        font_price = ImageFont.truetype(os.path.join(base_path, 'Almarai-ExtraBold.ttf'), 80)
+        font_en = ImageFont.truetype(os.path.join(base_path, 'arial.ttf'), 28)
     except Exception:
         try:
-            font_arabic_bold = ImageFont.truetype(os.path.join(base_path, 'tahoma.ttf'), 44)
+            font_arabic_bold = ImageFont.truetype(os.path.join(base_path, 'tahoma.ttf'), 48)
             font_arabic = ImageFont.truetype(os.path.join(base_path, 'tahoma.ttf'), 32)
-            font_arabic_small = ImageFont.truetype(os.path.join(base_path, 'tahoma.ttf'), 26)
-            font_price = ImageFont.truetype(os.path.join(base_path, 'tahoma.ttf'), 60)
+            font_arabic_small = ImageFont.truetype(os.path.join(base_path, 'tahoma.ttf'), 22)
+            font_price = ImageFont.truetype(os.path.join(base_path, 'tahoma.ttf'), 80)
+            font_en = ImageFont.truetype(os.path.join(base_path, 'arial.ttf'), 28)
         except Exception:
-            font_arabic_bold = font_arabic = font_arabic_small = font_price = ImageFont.load_default()
+            font_arabic_bold = font_arabic = font_arabic_small = font_price = font_en = ImageFont.load_default()
             logger.warning("لم يتم العثور على خط عربي واضح. سيتم استخدام الخط الافتراضي وقد لا تظهر العربية بشكل صحيح.")
 
-    # إعداد ألوان النص والظل
+    # ألوان
     color_white = (255, 255, 255)
     color_shadow = (0, 0, 0, 180)
     color_new_price = (255, 59, 48)
+    color_price_shadow = (255, 255, 255, 220)
+    color_old_price = (68, 68, 68)
     color_increase = (0, 200, 83)
     color_decrease = (255, 59, 48)
     color_label = (220, 220, 220)
-    color_value = (255, 255, 255)
+    color_footer = (187, 187, 187)
 
-    # منطق رسم النصوص مع ظل خفيف
-    def draw_text(text, xy, font, fill, anchor, shadow=True):
+    # رسم نص مع ظل أو توهج
+    def draw_text(text, xy, font, fill, anchor, shadow=True, glow=False, glow_radius=6):
         x, y = xy
+        if glow:
+            # رسم توهج أبيض خلف النص
+            for dx in range(-glow_radius, glow_radius+1, 2):
+                for dy in range(-glow_radius, glow_radius+1, 2):
+                    draw.text((x+dx, y+dy), text, font=font, fill=color_price_shadow, anchor=anchor)
         if shadow:
             draw.text((x+2, y+2), text, font=font, fill=color_shadow, anchor=anchor)
         draw.text((x, y), text, font=font, fill=fill, anchor=anchor)
 
-    # --- توزيع النصوص بشكل جمالي فوق الخلفية مباشرة ---
-    # اسم الدواء (عربي) أعلى الصورة في المنتصف
-    y = 60
-    draw_text(data['name_ar'], (width//2, y), font_arabic_bold, color_white, anchor='ma')
-    y += 48
-    # الاسم الإنجليزي والشكل الدوائي أسفل الاسم العربي
-    if data.get('name_en'):
-        draw_text(data['name_en'], (width//2, y), font_arabic, color_label, anchor='ma')
-        y += 32
-    if data.get('dosage_form'):
-        draw_text(data['dosage_form'], (width//2, y), font_arabic_small, color_label, anchor='ma')
-        y += 28
-    # السعر الجديد في منتصف الصورة
-    y_price = height//2 - 30
-    draw_text("السعر الجديد", (width//2, y_price), font_arabic, color_label, anchor='ma')
-    draw_text(f"{data['new_price']} جنيه", (width//2, y_price+38), font_price, color_new_price, anchor='ma')
-    # السعر السابق والنسبة أسفل السعر الجديد
-    percent_color = color_increase if '%' in data['percent'] and data['percent'].startswith('+') else color_decrease
-    price_change_text = f"السعر السابق: {data['old_price']} جنيه  |  نسبة التغيير: {data['percent']}"
-    draw_text(price_change_text, (width//2, y_price+98), font_arabic, percent_color, anchor='ma')
-    # الباركود والتاريخ أسفل الصورة في المنتصف
-    y_footer = height - 60
-    draw_text(f"Barcode: {data.get('barcode', 'N/A')}", (width//2, y_footer), font_arabic_small, color_label, anchor='ma', shadow=False)
-    draw_text(data['timestamp'], (width//2, y_footer+28), font_arabic_small, color_label, anchor='ma', shadow=False)
+    # --- توزيع العناصر ---
+    # اسم الدواء العربي (يمين أعلى)
+    margin = 40
+    y_ar = margin
+    draw_text(data['name_ar'], (width - margin, y_ar), font_arabic_bold, color_white, anchor='ra', shadow=True)
+
+    # اسم الدواء الإنجليزي (تحته، يسار)
+    y_en = y_ar + 50
+    draw_text(data['name_en'], (margin, y_en), font_en, color_label, anchor='la', shadow=False)
+
+    # السعر الجديد (منتصف الصورة)
+    y_price = height // 2 - 40
+    price_str = f"{data['new_price']}"
+    # أيقونة جنيه مصري + سهم
+    percent = data.get('percent', '')
+    is_increase = percent.startswith('+')
+    is_decrease = percent.startswith('-')
+    arrow = '⬆️' if is_increase else ('⬇️' if is_decrease else '')
+    egp_icon = 'ج.م'
+    price_display = f"{price_str} {egp_icon} {arrow}"
+    draw_text(price_display, (width//2, y_price), font_price, color_new_price, anchor='ma', shadow=True, glow=True)
+
+    # السعر السابق + النسبة (أسفل السعر الجديد، يمين)
+    y_old = y_price + 90
+    old_price_str = f"السعر السابق: {data['old_price']} ج.م"
+    percent_color = color_increase if is_increase else color_decrease if is_decrease else color_old_price
+    percent_str = data['percent']
+    percent_display = f"نسبة التغيير: {percent_str}"
+    draw_text(old_price_str, (width - margin, y_old), font_arabic, color_old_price, anchor='ra', shadow=False)
+    draw_text(percent_display, (width - margin, y_old + 36), font_arabic, percent_color, anchor='ra', shadow=False)
+
+    # الباركود والتاريخ (أسفل الصورة، رمادي فاتح جدًا، صغير)
+    y_footer = height - 50
+    barcode_str = f"Barcode: {data.get('barcode', 'N/A')}"
+    timestamp_str = data['timestamp']
+    draw_text(barcode_str, (width//2, y_footer), font_arabic_small, color_footer, anchor='ma', shadow=False)
+    draw_text(timestamp_str, (width//2, y_footer + 24), font_arabic_small, color_footer, anchor='ma', shadow=False)
 
     img = img.convert('RGB')
     img.save(output_path, 'PNG', quality=95, optimize=True)
