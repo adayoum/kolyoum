@@ -152,14 +152,14 @@ def create_notification_image(data: dict, logo_path: str = 'background.png', out
         img = Image.open(full_logo_path).convert('RGBA')
         if img.size != (width, height):
             img = img.resize((width, height), Image.LANCZOS)
-        # تقليل شفافية الرمز الطبي (20%)
+        # تقليل شفافية الرمز الطبي (10%)
         alpha = img.split()[-1]
-        alpha = alpha.point(lambda p: int(p * 0.20))
+        alpha = alpha.point(lambda p: int(p * 0.10))
         img.putalpha(alpha)
         logger.info(f"تم استخدام الخلفية: {full_logo_path}")
     except Exception as e:
         logger.error(f"Could not open background image 'background.png': {e}")
-        img = Image.new('RGBA', (width, height), (255, 255, 255, 255))
+        img = Image.new('RGBA', (width, height), (40, 48, 54, 255))  # خلفية داكنة افتراضية
     draw = ImageDraw.Draw(img)
 
     # تحميل خط المراعي فقط
@@ -168,22 +168,23 @@ def create_notification_image(data: dict, logo_path: str = 'background.png', out
         font_arabic = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 34)
         font_arabic_small = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 18)
         font_price = ImageFont.truetype(os.path.join(base_path, 'Almarai-ExtraBold.ttf'), 90)
-        font_en = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 28)
-        font_logo = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 60)
+        font_en = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 24)
+        font_logo = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 48)
     except Exception:
         font_arabic_bold = font_arabic = font_arabic_small = font_price = font_en = font_logo = ImageFont.load_default()
         logger.warning("لم يتم العثور على خط المراعي. سيتم استخدام الخط الافتراضي وقد لا تظهر العربية بشكل صحيح.")
 
     # ألوان
     color_white = (255, 255, 255)
-    color_shadow = (0, 0, 0, 180)
+    color_shadow = (0, 0, 0, 220)
     color_new_price = (255, 59, 48)
     color_price_shadow = (255, 255, 255, 220)
-    color_old_price = (68, 68, 68)
+    color_old_price = (200, 200, 200)
     color_increase = (0, 200, 83)
     color_decrease = (255, 59, 48)
     color_label = (220, 220, 220)
-    color_footer = (210, 210, 210)
+    color_footer = (220, 220, 220)
+    color_logo = (180, 180, 180, 120)
 
     # رسم نص مع ظل أو توهج
     def draw_text(text, xy, font, fill, anchor, shadow=True, glow=False, glow_radius=6):
@@ -196,17 +197,28 @@ def create_notification_image(data: dict, logo_path: str = 'background.png', out
             draw.text((x+2, y+2), text, font=font, fill=color_shadow, anchor=anchor)
         draw.text((x, y), text, font=font, fill=fill, anchor=anchor)
 
-    # --- توزيع العناصر ---
     margin = 40
-    # اسم الدواء العربي (يمين أعلى)
+    # اسم الدواء العربي (يمين أعلى، مع تصغير تلقائي إذا كان طويل)
     y_ar = margin
-    draw_text(data['name_ar'], (width - margin, y_ar), font_arabic_bold, color_white, anchor='ra', shadow=True, glow=True)
+    name_ar = data['name_ar']
+    max_width = width - 2*margin
+    font_size = 52
+    while True:
+        font_test = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), font_size)
+        text_width = draw.textlength(name_ar, font=font_test)
+        if text_width <= max_width or font_size <= 28:
+            break
+        font_size -= 2
+    font_arabic_bold = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), font_size)
+    draw_text(name_ar, (width - margin, y_ar), font_arabic_bold, color_white, anchor='ra', shadow=True, glow=True)
 
-    # اسم الدواء الإنجليزي (أعلى الصورة يسار، بخط أكبر)
+    # اسم الدواء الإنجليزي (أعلى يسار، بخط أصغر، إذا كان ضروري)
     y_en = margin
-    draw_text(data['name_en'], (margin, y_en), font_en, color_label, anchor='la', shadow=True)
+    name_en = data['name_en']
+    if name_en and name_en.strip() and name_en.lower() != 'name not available':
+        draw_text(name_en, (margin, y_en), font_en, color_label, anchor='la', shadow=True)
 
-    # السعر الجديد (منتصف الصورة)
+    # السعر الجديد (منتصف الصورة، "195 ج.م" في سطر واحد)
     y_price = height // 2 - 40
     price_str = f"{data['new_price']} ج.م"
     percent = data.get('percent', '')
@@ -223,21 +235,24 @@ def create_notification_image(data: dict, logo_path: str = 'background.png', out
     percent_str = data['percent']
     percent_display = f"نسبة التغيير: {percent_str}"
     old_and_percent = f"{old_price_str} | {percent_display}"
-    # تلوين النسبة فقط داخل السطر
-    # نرسم أولاً السعر السابق
-    draw_text(old_price_str, (width - margin, y_old), font_arabic, color_old_price, anchor='ra', shadow=True)
-    # ثم نرسم النسبة بجانبها
-    percent_width = draw.textlength(old_price_str + ' | ', font=font_arabic)
-    draw_text(percent_display, (width - margin - percent_width, y_old), font_arabic, percent_color, anchor='ra', shadow=True)
+    # رسم السطر بالكامل أولاً باللون الرمادي، ثم إعادة رسم النسبة فقط فوقه باللون المناسب
+    draw_text(old_and_percent, (width - margin, y_old), font_arabic, color_old_price, anchor='ra', shadow=True)
+    # حساب موضع النسبة داخل السطر
+    percent_start = old_and_percent.find(percent_display)
+    if percent_start != -1:
+        prefix = old_and_percent[:percent_start]
+        prefix_width = draw.textlength(prefix, font=font_arabic)
+        percent_xy = (width - margin - prefix_width, y_old)
+        draw_text(percent_display, percent_xy, font_arabic, percent_color, anchor='la', shadow=True)
 
-    # شعار DrugShift أسفل منتصف الصورة (أصغر 15%)
+    # شعار DrugShift أسفل منتصف الصورة (أصغر وأكثر شفافية)
     logo_text = "DrugShift"
-    logo_font_size = int(60 * 0.85)
+    logo_font_size = int(48 * 0.85)
     try:
         font_logo = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), logo_font_size)
     except Exception:
         font_logo = ImageFont.load_default()
-    draw_text(logo_text, (width//2, height-120), font_logo, (180, 180, 180), anchor='ma', shadow=False)
+    draw_text(logo_text, (width//2, height-120), font_logo, color_logo, anchor='ma', shadow=False)
 
     # الباركود والتاريخ (أسفل الصورة، رمادي أفتح، صغير)
     y_footer = height - 50
