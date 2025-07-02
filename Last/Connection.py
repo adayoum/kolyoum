@@ -140,22 +140,22 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
 
 def create_notification_image(data: dict, logo_path: str = 'background.png', output_path: str = 'notification.png'):
     """
-    ينشئ صورة إشعار احترافية فوق الخلفية الأصلية (بدون أي مستطيلات أو مربعات)، مع توزيع النصوص بشكل جمالي واحترافي.
+    ينشئ صورة إشعار احترافية فوق الخلفية الأصلية background.png (بدون أي مستطيلات أو مربعات)، مع توزيع النصوص بشكل جمالي واحترافي.
     """
     from PIL import Image, ImageDraw, ImageFont
     import os
     width, height = 800, 600
     base_path = os.path.dirname(os.path.abspath(__file__))
-    # تحميل الخلفية الأصلية كما هي (بدون تغيير الحجم أو التحويل)
+    # تحميل الخلفية background.png فقط
     try:
-        full_logo_path = os.path.join(base_path, logo_path)
+        full_logo_path = os.path.join(base_path, 'background.png')
         img = Image.open(full_logo_path)
         img = img.convert('RGBA')
-        # إذا كانت الخلفية أكبر أو أصغر من المطلوب، قص أو أضف حواف بيضاء
         if img.size != (width, height):
             img = img.resize((width, height), Image.LANCZOS)
+        logger.info(f"تم استخدام الخلفية: {full_logo_path}")
     except Exception as e:
-        logger.error(f"Could not open background image: {e}")
+        logger.error(f"Could not open background image 'background.png': {e}")
         img = Image.new('RGBA', (width, height), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
 
@@ -218,7 +218,7 @@ def create_notification_image(data: dict, logo_path: str = 'background.png', out
 
     img = img.convert('RGB')
     img.save(output_path, 'PNG', quality=95, optimize=True)
-    logger.info(f"تم حفظ الصورة بنجاح في '{output_path}'")
+    logger.info(f"تم حفظ الصورة بنجاح في '{output_path}' (الخلفية المستخدمة: background.png)")
     return output_path
 
 
