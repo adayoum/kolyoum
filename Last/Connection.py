@@ -140,130 +140,271 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
 
 def create_notification_image(data: dict, logo_path: str = 'background.png', output_path: str = 'notification.png'):
     """
-    ينشئ صورة إشعار احترافية فوق الخلفية الأصلية background.png مع توزيع النصوص والعناصر بشكل جمالي واحترافي حسب توصيات المستخدم، ويستخدم خط المراعي فقط.
+    ينشئ صورة إشعار احترافية وجذابة مع تصميم متقدم وتأثيرات بصرية حديثة
     """
-    from PIL import Image, ImageDraw, ImageFont, ImageEnhance
+    from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
     import os
-    width, height = 800, 600
+    import math
+    
+    # إعدادات الصورة
+    width, height = 1200, 800  # حجم أكبر للحصول على جودة أفضل
     base_path = os.path.dirname(os.path.abspath(__file__))
-    # تحميل الخلفية background.png فقط
+    
+    # تحميل الخلفية وإنشاء طبقات متعددة
     try:
         full_logo_path = os.path.join(base_path, 'background.png')
-        img = Image.open(full_logo_path).convert('RGBA')
-        if img.size != (width, height):
-            img = img.resize((width, height), Image.LANCZOS)
-        # تقليل شفافية الرمز الطبي (10%)
-        alpha = img.split()[-1]
-        alpha = alpha.point(lambda p: int(p * 0.10))
-        img.putalpha(alpha)
-        logger.info(f"تم استخدام الخلفية: {full_logo_path}")
+        background = Image.open(full_logo_path).convert('RGBA')
+        if background.size != (width, height):
+            background = background.resize((width, height), Image.LANCZOS)
+        
+        # إنشاء طبقة تدرج لونية عصرية
+        gradient = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        gradient_draw = ImageDraw.Draw(gradient)
+        
+        # تدرج من الأزرق الداكن إلى الأزرق الفاتح
+        for y in range(height):
+            alpha = int(120 * (1 - y / height))  # تدرج الشفافية
+            color = (15, 25, 35, alpha)  # لون أزرق داكن متدرج
+            gradient_draw.line([(0, y), (width, y)], fill=color)
+        
+        # دمج الخلفية مع التدرج
+        img = Image.alpha_composite(background, gradient)
+        
+        # إضافة تأثير ضبابي خفيف للخلفية
+        blurred_bg = img.filter(ImageFilter.GaussianBlur(radius=1))
+        img = Image.blend(img, blurred_bg, 0.3)
+        
+        logger.info(f"تم تحميل الخلفية بنجاح: {full_logo_path}")
     except Exception as e:
-        logger.error(f"Could not open background image 'background.png': {e}")
-        img = Image.new('RGBA', (width, height), (40, 48, 54, 255))  # خلفية داكنة افتراضية
+        logger.error(f"خطأ في تحميل الخلفية: {e}")
+        # إنشاء خلفية متدرجة احترافية
+        img = Image.new('RGBA', (width, height), (0, 0, 0, 255))
+        draw_bg = ImageDraw.Draw(img)
+        for y in range(height):
+            ratio = y / height
+            r = int(15 + (25 * ratio))
+            g = int(25 + (35 * ratio))
+            b = int(35 + (45 * ratio))
+            draw_bg.line([(0, y), (width, y)], fill=(r, g, b, 255))
+    
     draw = ImageDraw.Draw(img)
-
-    # تحميل خط المراعي فقط
-    try:
-        font_arabic_bold = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 52)
-        font_arabic = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 34)
-        font_arabic_small = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 18)
-        font_price = ImageFont.truetype(os.path.join(base_path, 'Almarai-ExtraBold.ttf'), 90)
-        font_en = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 24)
-        font_logo = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 48)
-    except Exception:
-        font_arabic_bold = font_arabic = font_arabic_small = font_price = font_en = font_logo = ImageFont.load_default()
-        logger.warning("لم يتم العثور على خط المراعي. سيتم استخدام الخط الافتراضي وقد لا تظهر العربية بشكل صحيح.")
-
-    # ألوان
-    color_white = (255, 255, 255)
-    color_shadow = (0, 0, 0, 220)
-    color_new_price = (255, 59, 48)
-    color_price_shadow = (255, 255, 255, 220)
-    color_old_price = (200, 200, 200)
-    color_increase = (0, 200, 83)
-    color_decrease = (255, 59, 48)
-    color_label = (220, 220, 220)
-    color_footer = (220, 220, 220)
-    color_logo = (180, 180, 180, 120)
-
-    # رسم نص مع ظل أو توهج
-    def draw_text(text, xy, font, fill, anchor, shadow=True, glow=False, glow_radius=6):
-        x, y = xy
+    
+    # تحميل الخطوط مع أحجام متنوعة
+    fonts = {}
+    font_sizes = {
+        'title': 64, 'subtitle': 32, 'price': 120, 'old_price': 28,
+        'percent': 36, 'details': 20, 'footer': 16, 'logo': 40
+    }
+    
+    for font_type, size in font_sizes.items():
+        try:
+            if font_type == 'price':
+                fonts[font_type] = ImageFont.truetype(os.path.join(base_path, 'Almarai-ExtraBold.ttf'), size)
+            elif font_type in ['title', 'logo']:
+                fonts[font_type] = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), size)
+            else:
+                fonts[font_type] = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), size)
+        except Exception:
+            fonts[font_type] = ImageFont.load_default()
+    
+    # ألوان عصرية ومتناسقة
+    colors = {
+        'primary_text': (255, 255, 255, 255),
+        'secondary_text': (220, 220, 220, 255),
+        'accent_text': (160, 160, 160, 255),
+        'price_bg': (255, 59, 48, 255),
+        'price_text': (255, 255, 255, 255),
+        'old_price': (180, 180, 180, 255),
+        'increase': (52, 199, 89, 255),
+        'decrease': (255, 59, 48, 255),
+        'neutral': (255, 204, 0, 255),
+        'card_bg': (255, 255, 255, 25),
+        'shadow': (0, 0, 0, 100),
+        'glow': (255, 255, 255, 80)
+    }
+    
+    # دالة لرسم نص مع تأثيرات متقدمة
+    def draw_advanced_text(text, position, font, color, anchor='la', 
+                          shadow=True, glow=False, outline=False, max_width=None):
+        x, y = position
+        
+        # تقليص النص إذا كان طويلاً
+        if max_width and draw.textlength(text, font=font) > max_width:
+            while draw.textlength(text + "...", font=font) > max_width and len(text) > 10:
+                text = text[:-1]
+            text += "..."
+        
+        # رسم الإطار الخارجي
+        if outline:
+            for dx in [-2, -1, 0, 1, 2]:
+                for dy in [-2, -1, 0, 1, 2]:
+                    if dx != 0 or dy != 0:
+                        draw.text((x+dx, y+dy), text, font=font, fill=colors['shadow'], anchor=anchor)
+        
+        # رسم التوهج
         if glow:
-            for dx in range(-glow_radius, glow_radius+1, 2):
-                for dy in range(-glow_radius, glow_radius+1, 2):
-                    draw.text((x+dx, y+dy), text, font=font, fill=color_price_shadow, anchor=anchor)
+            for radius in range(8, 0, -2):
+                alpha = int(colors['glow'][3] * (radius / 8))
+                glow_color = (*colors['glow'][:3], alpha)
+                for angle in range(0, 360, 45):
+                    gx = x + radius * math.cos(math.radians(angle))
+                    gy = y + radius * math.sin(math.radians(angle))
+                    draw.text((gx, gy), text, font=font, fill=glow_color, anchor=anchor)
+        
+        # رسم الظل
         if shadow:
-            draw.text((x+2, y+2), text, font=font, fill=color_shadow, anchor=anchor)
-        draw.text((x, y), text, font=font, fill=fill, anchor=anchor)
-
-    margin = 40
-    # اسم الدواء العربي (يمين أعلى، مع تصغير تلقائي إذا كان طويل)
-    y_ar = margin
+            draw.text((x+3, y+3), text, font=font, fill=colors['shadow'], anchor=anchor)
+        
+        # رسم النص الأساسي
+        draw.text((x, y), text, font=font, fill=color, anchor=anchor)
+    
+    # دالة لرسم بطاقة مع خلفية شفافة
+    def draw_card(x, y, w, h, radius=15):
+        # رسم الظل
+        shadow_offset = 5
+        draw.rounded_rectangle(
+            [x+shadow_offset, y+shadow_offset, x+w+shadow_offset, y+h+shadow_offset],
+            radius=radius, fill=colors['shadow']
+        )
+        # رسم البطاقة
+        draw.rounded_rectangle(
+            [x, y, x+w, y+h],
+            radius=radius, fill=colors['card_bg']
+        )
+    
+    # الهوامش والمسافات
+    margin = 60
+    card_padding = 30
+    
+    # رسم شعار DrugShift في الأعلى
+    logo_y = margin
+    draw_advanced_text("DrugShift", (width//2, logo_y), fonts['logo'], 
+                      colors['secondary_text'], anchor='ma', glow=True)
+    
+    # رسم خط فاصل تحت الشعار
+    line_y = logo_y + 60
+    draw.line([(margin*2, line_y), (width-margin*2, line_y)], 
+              fill=colors['accent_text'], width=2)
+    
+    # بطاقة اسم الدواء
+    name_card_y = line_y + 30
+    name_card_height = 120
+    draw_card(margin, name_card_y, width-2*margin, name_card_height)
+    
+    # اسم الدواء العربي (عنوان رئيسي)
     name_ar = data['name_ar']
-    max_width = width - 2*margin
-    font_size = 52
-    while True:
-        font_test = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), font_size)
-        text_width = draw.textlength(name_ar, font=font_test)
-        if text_width <= max_width or font_size <= 28:
-            break
-        font_size -= 2
-    font_arabic_bold = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), font_size)
-    draw_text(name_ar, (width - margin, y_ar), font_arabic_bold, color_white, anchor='ra', shadow=True, glow=True)
-
-    # اسم الدواء الإنجليزي (أعلى يسار، بخط أصغر، إذا كان ضروري)
-    y_en = margin
+    name_y = name_card_y + card_padding
+    draw_advanced_text(name_ar, (width//2, name_y), fonts['title'], 
+                      colors['primary_text'], anchor='ma', shadow=True, 
+                      max_width=width-2*margin-2*card_padding)
+    
+    # اسم الدواء الإنجليزي (عنوان فرعي)
     name_en = data['name_en']
     if name_en and name_en.strip() and name_en.lower() != 'name not available':
-        draw_text(name_en, (margin, y_en), font_en, color_label, anchor='la', shadow=True)
-
-    # السعر الجديد (منتصف الصورة، "195 ج.م" في سطر واحد)
-    y_price = height // 2 - 40
-    price_str = f"{data['new_price']} ج.م"
+        name_en_y = name_y + 50
+        draw_advanced_text(name_en, (width//2, name_en_y), fonts['subtitle'], 
+                          colors['secondary_text'], anchor='ma', 
+                          max_width=width-2*margin-2*card_padding)
+    
+    # بطاقة السعر الرئيسية
+    price_card_y = name_card_y + name_card_height + 40
+    price_card_height = 180
+    draw_card(margin, price_card_y, width-2*margin, price_card_height)
+    
+    # السعر الجديد مع خلفية ملونة
+    new_price = data['new_price']
     percent = data.get('percent', '')
     is_increase = percent.startswith('+')
     is_decrease = percent.startswith('-')
-    arrow = '⬆️' if is_increase else ('⬇️' if is_decrease else '')
-    price_display = f"{price_str} {arrow}".strip()
-    draw_text(price_display, (width//2, y_price), font_price, color_new_price, anchor='ma', shadow=True, glow=True)
-
-    # السعر السابق والنسبة (سطر واحد، يمين)
-    y_old = y_price + 100
-    old_price_str = f"السعر السابق: {data['old_price']} ج.م"
-    percent_color = color_increase if is_increase else color_decrease if is_decrease else color_old_price
-    percent_str = data['percent']
-    percent_display = f"نسبة التغيير: {percent_str}"
-    old_and_percent = f"{old_price_str} | {percent_display}"
-    # رسم السطر بالكامل أولاً باللون الرمادي، ثم إعادة رسم النسبة فقط فوقه باللون المناسب
-    draw_text(old_and_percent, (width - margin, y_old), font_arabic, color_old_price, anchor='ra', shadow=True)
-    # حساب موضع النسبة داخل السطر
-    percent_start = old_and_percent.find(percent_display)
-    if percent_start != -1:
-        prefix = old_and_percent[:percent_start]
-        prefix_width = draw.textlength(prefix, font=font_arabic)
-        percent_xy = (width - margin - prefix_width, y_old)
-        draw_text(percent_display, percent_xy, font_arabic, percent_color, anchor='la', shadow=True)
-
-    # شعار DrugShift أسفل منتصف الصورة (أصغر وأكثر شفافية)
-    logo_text = "DrugShift"
-    logo_font_size = int(48 * 0.85)
-    try:
-        font_logo = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), logo_font_size)
-    except Exception:
-        font_logo = ImageFont.load_default()
-    draw_text(logo_text, (width//2, height-120), font_logo, color_logo, anchor='ma', shadow=False)
-
-    # الباركود والتاريخ (أسفل الصورة، رمادي أفتح، صغير)
-    y_footer = height - 50
-    barcode_str = f"Barcode: {data.get('barcode', 'N/A')}"
-    timestamp_str = data['timestamp']
-    draw_text(barcode_str, (width//2, y_footer), font_arabic_small, color_footer, anchor='ma', shadow=False)
-    draw_text(timestamp_str, (width//2, y_footer + 18), font_arabic_small, color_footer, anchor='ma', shadow=False)
-
+    
+    # تحديد لون السعر حسب التغيير
+    if is_increase:
+        price_color = colors['increase']
+        arrow = "📈"
+    elif is_decrease:
+        price_color = colors['decrease']
+        arrow = "📉"
+    else:
+        price_color = colors['neutral']
+        arrow = "💰"
+    
+    # رسم خلفية السعر
+    price_bg_y = price_card_y + 20
+    price_bg_height = 80
+    draw.rounded_rectangle(
+        [margin + card_padding, price_bg_y, width - margin - card_padding, price_bg_y + price_bg_height],
+        radius=40, fill=price_color
+    )
+    
+    # رسم السعر الجديد
+    price_text = f"{new_price} ج.م {arrow}"
+    price_y = price_bg_y + price_bg_height//2
+    draw_advanced_text(price_text, (width//2, price_y), fonts['price'], 
+                      colors['price_text'], anchor='ma', shadow=True, glow=True)
+    
+    # معلومات السعر السابق والنسبة
+    old_price_y = price_y + 60
+    old_price_text = f"السعر السابق: {data['old_price']} ج.م"
+    percent_text = f"نسبة التغيير: {data['percent']}"
+    
+    # رسم السعر السابق
+    draw_advanced_text(old_price_text, (width//4, old_price_y), fonts['old_price'], 
+                      colors['old_price'], anchor='ma')
+    
+    # رسم النسبة بلون مناسب
+    percent_color = colors['increase'] if is_increase else colors['decrease'] if is_decrease else colors['neutral']
+    draw_advanced_text(percent_text, (3*width//4, old_price_y), fonts['percent'], 
+                      percent_color, anchor='ma', shadow=True)
+    
+    # بطاقة التفاصيل
+    details_card_y = price_card_y + price_card_height + 30
+    details_card_height = 100
+    draw_card(margin, details_card_y, width-2*margin, details_card_height)
+    
+    # تفاصيل إضافية
+    details_y = details_card_y + card_padding
+    barcode_text = f"الباركود: {data.get('barcode', 'غير متوفر')}"
+    timestamp_text = f"آخر تحديث: {data['timestamp']}"
+    
+    draw_advanced_text(barcode_text, (width//2, details_y), fonts['details'], 
+                      colors['accent_text'], anchor='ma')
+    draw_advanced_text(timestamp_text, (width//2, details_y + 30), fonts['details'], 
+                      colors['accent_text'], anchor='ma')
+    
+    # رسم حدود زخرفية في الزوايا
+    corner_size = 30
+    corner_width = 4
+    corner_color = colors['secondary_text']
+    
+    # الزاوية العلوية اليسرى
+    draw.arc([margin, margin, margin + corner_size, margin + corner_size], 
+             180, 270, fill=corner_color, width=corner_width)
+    # الزاوية العلوية اليمنى
+    draw.arc([width - margin - corner_size, margin, width - margin, margin + corner_size], 
+             270, 360, fill=corner_color, width=corner_width)
+    # الزاوية السفلية اليسرى
+    draw.arc([margin, height - margin - corner_size, margin + corner_size, height - margin], 
+             90, 180, fill=corner_color, width=corner_width)
+    # الزاوية السفلية اليمنى
+    draw.arc([width - margin - corner_size, height - margin - corner_size, width - margin, height - margin], 
+             0, 90, fill=corner_color, width=corner_width)
+    
+    # إضافة تأثير النعومة النهائي
     img = img.convert('RGB')
-    img.save(output_path, 'PNG', quality=95, optimize=True)
-    logger.info(f"تم حفظ الصورة بنجاح في '{output_path}' (الخلفية المستخدمة: background.png)")
+    
+    # تطبيق تحسين الألوان
+    enhancer = ImageEnhance.Color(img)
+    img = enhancer.enhance(1.2)  # زيادة تشبع الألوان
+    
+    enhancer = ImageEnhance.Contrast(img)
+    img = enhancer.enhance(1.1)  # زيادة التباين قليلاً
+    
+    # حفظ الصورة بجودة عالية
+    img.save(output_path, 'PNG', quality=98, optimize=True, dpi=(300, 300))
+    
+    logger.info(f"تم إنشاء صورة الإشعار بنجاح: {output_path}")
+    logger.info(f"أبعاد الصورة: {width}x{height} بكسل")
+    
     return output_path
 
 
