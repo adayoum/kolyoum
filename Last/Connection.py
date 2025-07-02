@@ -140,7 +140,7 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
 
 def create_notification_image(data: dict, logo_path: str = 'background.png', output_path: str = 'notification.png'):
     """
-    ينشئ صورة إشعار احترافية فوق الخلفية الأصلية background.png مع توزيع النصوص والعناصر بشكل جمالي واحترافي حسب توصيات المستخدم.
+    ينشئ صورة إشعار احترافية فوق الخلفية الأصلية background.png مع توزيع النصوص والعناصر بشكل جمالي واحترافي حسب توصيات المستخدم، ويستخدم خط المراعي فقط.
     """
     from PIL import Image, ImageDraw, ImageFont, ImageFilter
     import os
@@ -159,23 +159,15 @@ def create_notification_image(data: dict, logo_path: str = 'background.png', out
         img = Image.new('RGBA', (width, height), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    # تحميل الخطوط
+    # تحميل خط المراعي فقط
     try:
-        font_arabic_bold = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 48)
-        font_arabic = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 32)
+        font_arabic_bold = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 52)
+        font_arabic = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 34)
         font_arabic_small = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 22)
-        font_price = ImageFont.truetype(os.path.join(base_path, 'Almarai-ExtraBold.ttf'), 80)
-        font_en = ImageFont.truetype(os.path.join(base_path, 'arial.ttf'), 28)
+        font_price = ImageFont.truetype(os.path.join(base_path, 'Almarai-ExtraBold.ttf'), 90)
     except Exception:
-        try:
-            font_arabic_bold = ImageFont.truetype(os.path.join(base_path, 'tahoma.ttf'), 48)
-            font_arabic = ImageFont.truetype(os.path.join(base_path, 'tahoma.ttf'), 32)
-            font_arabic_small = ImageFont.truetype(os.path.join(base_path, 'tahoma.ttf'), 22)
-            font_price = ImageFont.truetype(os.path.join(base_path, 'tahoma.ttf'), 80)
-            font_en = ImageFont.truetype(os.path.join(base_path, 'arial.ttf'), 28)
-        except Exception:
-            font_arabic_bold = font_arabic = font_arabic_small = font_price = font_en = ImageFont.load_default()
-            logger.warning("لم يتم العثور على خط عربي واضح. سيتم استخدام الخط الافتراضي وقد لا تظهر العربية بشكل صحيح.")
+        font_arabic_bold = font_arabic = font_arabic_small = font_price = ImageFont.load_default()
+        logger.warning("لم يتم العثور على خط المراعي. سيتم استخدام الخط الافتراضي وقد لا تظهر العربية بشكل صحيح.")
 
     # ألوان
     color_white = (255, 255, 255)
@@ -206,9 +198,9 @@ def create_notification_image(data: dict, logo_path: str = 'background.png', out
     y_ar = margin
     draw_text(data['name_ar'], (width - margin, y_ar), font_arabic_bold, color_white, anchor='ra', shadow=True)
 
-    # اسم الدواء الإنجليزي (تحته، يسار)
-    y_en = y_ar + 50
-    draw_text(data['name_en'], (margin, y_en), font_en, color_label, anchor='la', shadow=False)
+    # اسم الدواء الإنجليزي (تحته، يسار، بخط المراعي فقط)
+    y_en = y_ar + 54
+    draw_text(data['name_en'], (margin, y_en), font_arabic, color_label, anchor='la', shadow=False)
 
     # السعر الجديد (منتصف الصورة)
     y_price = height // 2 - 40
@@ -223,7 +215,7 @@ def create_notification_image(data: dict, logo_path: str = 'background.png', out
     draw_text(price_display, (width//2, y_price), font_price, color_new_price, anchor='ma', shadow=True, glow=True)
 
     # السعر السابق + النسبة (أسفل السعر الجديد، يمين)
-    y_old = y_price + 90
+    y_old = y_price + 100
     old_price_str = f"السعر السابق: {data['old_price']} ج.م"
     percent_color = color_increase if is_increase else color_decrease if is_decrease else color_old_price
     percent_str = data['percent']
