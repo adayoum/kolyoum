@@ -579,7 +579,7 @@ def get_notification_image_data(change_info: Dict[str, Any]) -> Dict[str, Any]:
 
 def create_notification_message(data: dict) -> str:
     """
-    ينشئ رسالة نصية احترافية وجذابة لإشعار تغير سعر الدواء.
+    ينشئ رسالة نصية احترافية وجذابة لإشعار تغير سعر الدواء مع تنسيق بصري متقدم.
     """
     name_ar = data.get('name_ar', 'اسم غير متوفر')
     name_en = data.get('name_en', '')
@@ -594,20 +594,35 @@ def create_notification_message(data: dict) -> str:
     is_decrease = percent.startswith('-')
     arrow = '⬆️' if is_increase else ('⬇️' if is_decrease else '➡️')
     percent_color = '🟢' if is_increase else '🔴' if is_decrease else '🟡'
+    percent_html = f"<b><span>{percent_color} {percent}</span></b>"
+
+    # إبراز السعر الجديد بخلفية (عبر كود HTML)
+    new_price_html = f"<b><u><span style='background-color:#22223b;color:#f2e9e4;padding:2px 8px;border-radius:6px;'>{new_price} ج.م {arrow}</span></u></b>"
+    # شطب السعر السابق
+    old_price_html = f"<s>{old_price} ج.م</s>"
+
+    # اسم الدواء مع إبراز ورمز
+    name_ar_html = f"<b><span style='color:#c9184a;font-size:20px;'>💊 {name_ar}</span></b>"
+    name_en_html = f"<i><span style='color:#adb5bd;font-size:13px;'>{name_en}</span></i>" if name_en and name_en.lower() != 'name not available' else ''
+
+    # خط فاصل
+    separator = '<b><span style="color:#adb5bd;">——————————————</span></b>'
+
+    # الباركود والتاريخ بخط صغير ورمادي
+    details_html = f"<code>الباركود: {barcode}</code>\n<code>آخر تحديث: {timestamp}</code>"
 
     # بناء الرسالة
     msg = f"""
-<b>💊 {name_ar}</b>
-{(name_en if name_en and name_en.lower() != 'name not available' else '')}
-
-<b>السعر الجديد:</b> <b>{new_price} ج.م</b> {arrow}
-<b>السعر السابق:</b> {old_price} ج.م
-<b>نسبة التغيير:</b> {percent_color} <b>{percent}</b>
-
-<code>الباركود: {barcode}</code>
-<code>آخر تحديث: {timestamp}</code>
+{name_ar_html}
+{name_en_html}
+{separator}
+<b>السعر الجديد:</b> {new_price_html}
+<b>السعر السابق:</b> {old_price_html}
+<b>نسبة التغيير:</b> {percent_html}
+{separator}
+{details_html}
     """
-    # إزالة سطر فارغ إذا لم يوجد اسم إنجليزي
+    # إزالة أي أسطر فارغة زائدة
     msg = '\n'.join([line for line in msg.splitlines() if line.strip()])
     return msg
 
