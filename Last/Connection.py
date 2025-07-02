@@ -586,7 +586,7 @@ def create_notification_message(data: dict) -> str:
     new_price = data.get('new_price', 'N/A')
     old_price = data.get('old_price', 'N/A')
     percent = data.get('percent', 'N/A')
-    barcode = data.get('barcode', 'غير متوفر')
+    barcode = data.get('barcode', '').strip()
     timestamp = data.get('timestamp', '')
 
     # تحديد السهم واللون حسب نسبة التغيير
@@ -608,8 +608,13 @@ def create_notification_message(data: dict) -> str:
     # خط فاصل
     separator = '<b><span style="color:#adb5bd;">——————————————</span></b>'
 
-    # الباركود والتاريخ بخط صغير ورمادي
-    details_html = f"<code>الباركود: {barcode}</code>\n<code>آخر تحديث: {timestamp}</code>"
+    # الباركود والتاريخ بخط صغير ورمادي (بدون طباعة الباركود إذا لم يوجد)
+    barcode_clean = barcode.replace('غير متوفر', '').replace('لا يوجد', '').strip()
+    details_lines = []
+    if barcode_clean:
+        details_lines.append(f"<code>الباركود: {barcode_clean}</code>")
+    details_lines.append(f"<code>آخر تحديث: {timestamp}</code>")
+    details_html = '\n'.join(details_lines)
 
     # بناء الرسالة
     msg = f"""
