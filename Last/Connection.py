@@ -501,13 +501,11 @@ async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_clien
                 if telegram_client and telegram_client.is_connected():
                     try:
                         image_data = get_notification_image_data({'previous': last_db_record, 'current': drug_data})
-                        image_path = f"notification_{drug_data['ID']}.png"
-                        create_notification_image(image_data, logo_path='background.jpg', output_path=image_path)
-                        notification_sent = await send_telegram_image(image_path, telegram_client)
-                        if os.path.exists(image_path):
-                            os.remove(image_path)
+                        # إرسال رسالة نصية فقط بدلاً من الصورة
+                        message = create_notification_message(image_data)
+                        notification_sent = await send_telegram_message(message, telegram_client)
                     except Exception as e:
-                        logger.error(f"Error creating or sending notification image for ID {drug_data['ID']}: {e}")
+                        logger.error(f"Error creating or sending notification message for ID {drug_data['ID']}: {e}")
                 else:
                     logger.warning(f"Telegram client not available. Cannot send notification for ID {drug_data['ID']}.")
                 
