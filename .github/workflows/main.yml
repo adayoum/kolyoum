@@ -4,6 +4,9 @@ on:
   # التشغيل اليدوي من تبويب Actions في GitHub
   workflow_dispatch:
 
+concurrency:
+  group: drugshift-bot
+  cancel-in-progress: false
 
 jobs:
   run-bot:
@@ -47,7 +50,6 @@ jobs:
 
       - name: Run DrugShift Bot
         env:
-          # تم الاحتفاظ بجميع متغيرات البيئة الخاصة بك كما هي
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           API_URL: ${{ secrets.API_URL }}
           USER_AGENT: ${{ secrets.USER_AGENT }}
