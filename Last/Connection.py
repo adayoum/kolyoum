@@ -107,14 +107,6 @@ def map_api_record_to_internal(api_record: dict) -> Optional[Dict[str, Any]]:
         'Image URL': api_record.get('img'),
     }
 
-DB_FIELD_MAPPING = {
-    'ID': 'id', 'Commercial Name (English)': 'commercial_name_en', 'Commercial Name (Arabic)': 'commercial_name_ar',
-    'Scientific Name/Active Ingredients': 'active_ingredients', 'Manufacturer': 'manufacturer',
-    'Current Price': 'current_price', 'Previous Price': 'previous_price',
-    'Last Price Update Date': 'last_price_update_date', 'Units': 'units', 'Barcode': 'barcode',
-    'Dosage Form': 'dosage_form', 'Uses (Arabic)': 'uses_ar', 'Image URL': 'image_url',
-}
-
 # --- API Fetching Logic ---
 async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query: str, semaphore: asyncio.Semaphore) -> Tuple[str, List[Dict[str, Any]]]:
     payload = {"search": "1", "searchq": search_query, "order_by": "name ASC", "page": "1"}
@@ -138,289 +130,75 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
 
 # --- Telegram Notification Logic ---
 
-def create_notification_image(data: dict, logo_path: str = 'background.png', output_path: str = 'notification.png'):
+def create_notification_image(data: Dict[str, Any], logo_path: str = 'background.jpg', output_path: str = 'notification.png'):
     """
-    ينشئ صورة إشعار احترافية وجذابة مع تصميم متقدم وتأثيرات بصرية حديثة
+    النسخة النهائية: تنشئ صورة احترافية بخلفية الشعار وألوان محسنة.
     """
-    from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
-    import os
-    import math
-    
-    # إعدادات الصورة
-    width, height = 1200, 800  # حجم أكبر للحصول على جودة أفضل
+    width, height = 800, 600
     base_path = os.path.dirname(os.path.abspath(__file__))
     
-    # تحميل الخلفية وإنشاء طبقات متعددة
     try:
-        full_logo_path = os.path.join(base_path, 'background.png')
-        background = Image.open(full_logo_path).convert('RGBA')
-        if background.size != (width, height):
-            background = background.resize((width, height), Image.LANCZOS)
-        
-        # إنشاء طبقة تدرج لونية عصرية
-        gradient = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-        gradient_draw = ImageDraw.Draw(gradient)
-        
-        # تدرج من الأزرق الداكن إلى الأزرق الفاتح
-        for y in range(height):
-            alpha = int(120 * (1 - y / height))  # تدرج الشفافية
-            color = (15, 25, 35, alpha)  # لون أزرق داكن متدرج
-            gradient_draw.line([(0, y), (width, y)], fill=color)
-        
-        # دمج الخلفية مع التدرج
-        img = Image.alpha_composite(background, gradient)
-        
-        # إضافة تأثير ضبابي خفيف للخلفية
-        blurred_bg = img.filter(ImageFilter.GaussianBlur(radius=1))
-        img = Image.blend(img, blurred_bg, 0.3)
-        
-        logger.info(f"تم تحميل الخلفية بنجاح: {full_logo_path}")
+        full_logo_path = os.path.join(base_path, logo_path)
+        img = Image.open(full_logo_path).convert('RGB').resize((width, height))
+        logger.info(f"تم تحميل خلفية الشعار بنجاح من: {full_logo_path}")
+    except FileNotFoundError:
+        logger.error(f"CRITICAL: لم يتم العثور على ملف الشعار '{logo_path}'.")
+        img = Image.new('RGB', (width, height), (255, 255, 255))
     except Exception as e:
-        logger.error(f"خطأ في تحميل الخلفية: {e}")
-        # إنشاء خلفية متدرجة احترافية
-        img = Image.new('RGBA', (width, height), (0, 0, 0, 255))
-        draw_bg = ImageDraw.Draw(img)
-        for y in range(height):
-            ratio = y / height
-            r = int(15 + (25 * ratio))
-            g = int(25 + (35 * ratio))
-            b = int(35 + (45 * ratio))
-            draw_bg.line([(0, y), (width, y)], fill=(r, g, b, 255))
-    
+        logger.error(f"An error occurred while opening the background image: {e}")
+        img = Image.new('RGB', (width, height), (255, 255, 255))
+
     draw = ImageDraw.Draw(img)
+
+    try:
+        font_regular = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 36)
+        font_bold = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), 42)
+        font_price = ImageFont.truetype(os.path.join(base_path, 'Almarai-ExtraBold.ttf'), 60)
+        font_footer = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), 26)
+        logger.info("تم تحميل خط المراعي بنجاح.")
+    except IOError:
+        logger.critical("خطأ فادح: لم يتم العثور على خطوط المراعي!")
+        font_regular, font_bold, font_price, font_footer = (ImageFont.load_default(),) * 4
+
+    color_text_light = (255, 255, 255)
+    color_shadow = (0, 0, 0)
+    color_new_price = (255, 59, 48)
+    color_increase = (0, 200, 83)
+    color_decrease = (255, 59, 48)
     
-    # تحميل الخطوط مع أحجام متنوعة
-    fonts = {}
-    font_sizes = {
-        'title': 64, 'subtitle': 32, 'price': 120, 'old_price': 28,
-        'percent': 36, 'details': 20, 'footer': 16, 'logo': 40
-    }
+    center_x = width / 2
+    current_y = 120
+    shadow_offset = 2
+
+    def draw_text_center_with_shadow(text: str, y_pos: int, font: ImageFont.FreeTypeFont, fill_color: Tuple[int, int, int]):
+        draw.text((center_x + shadow_offset, y_pos + shadow_offset), text, font=font, fill=color_shadow, anchor='ms', align='center')
+        draw.text((center_x, y_pos), text, font=font, fill=fill_color, anchor='ms', align='center')
+
+    draw_text_center_with_shadow(f"{data['name_ar']}", current_y, font_bold, color_text_light)
+    current_y += 55
+    if data.get('name_en'):
+        draw_text_center_with_shadow(f"{data['name_en']}", current_y, font_regular, color_text_light)
+        current_y += 50
     
-    for font_type, size in font_sizes.items():
-        try:
-            if font_type == 'price':
-                fonts[font_type] = ImageFont.truetype(os.path.join(base_path, 'Almarai-ExtraBold.ttf'), size)
-            elif font_type in ['title', 'logo']:
-                fonts[font_type] = ImageFont.truetype(os.path.join(base_path, 'Almarai-Bold.ttf'), size)
-            else:
-                fonts[font_type] = ImageFont.truetype(os.path.join(base_path, 'Almarai-Regular.ttf'), size)
-        except Exception:
-            fonts[font_type] = ImageFont.load_default()
-    
-    # ألوان عصرية ومتناسقة
-    colors = {
-        'primary_text': (255, 255, 255, 255),
-        'secondary_text': (220, 220, 220, 255),
-        'accent_text': (160, 160, 160, 255),
-        'price_bg': (255, 59, 48, 255),
-        'price_text': (255, 255, 255, 255),
-        'old_price': (180, 180, 180, 255),
-        'increase': (52, 199, 89, 255),
-        'decrease': (255, 59, 48, 255),
-        'neutral': (255, 204, 0, 255),
-        'card_bg': (255, 255, 255, 25),
-        'shadow': (0, 0, 0, 100),
-        'glow': (255, 255, 255, 80)
-    }
-    
-    # دالة لرسم نص مع تأثيرات متقدمة
-    def draw_advanced_text(text, position, font, color, anchor='la', 
-                          shadow=True, glow=False, outline=False, max_width=None):
-        x, y = position
-        
-        # تقليص النص إذا كان طويلاً
-        if max_width and draw.textlength(text, font=font) > max_width:
-            while draw.textlength(text + "...", font=font) > max_width and len(text) > 10:
-                text = text[:-1]
-            text += "..."
-        
-        # رسم الإطار الخارجي
-        if outline:
-            for dx in [-2, -1, 0, 1, 2]:
-                for dy in [-2, -1, 0, 1, 2]:
-                    if dx != 0 or dy != 0:
-                        draw.text((x+dx, y+dy), text, font=font, fill=colors['shadow'], anchor=anchor)
-        
-        # رسم التوهج
-        if glow:
-            for radius in range(8, 0, -2):
-                alpha = int(colors['glow'][3] * (radius / 8))
-                glow_color = (*colors['glow'][:3], alpha)
-                for angle in range(0, 360, 45):
-                    gx = x + radius * math.cos(math.radians(angle))
-                    gy = y + radius * math.sin(math.radians(angle))
-                    draw.text((gx, gy), text, font=font, fill=glow_color, anchor=anchor)
-        
-        # رسم الظل
-        if shadow:
-            draw.text((x+3, y+3), text, font=font, fill=colors['shadow'], anchor=anchor)
-        
-        # رسم النص الأساسي
-        draw.text((x, y), text, font=font, fill=color, anchor=anchor)
-    
-    # دالة لرسم بطاقة مع خلفية شفافة
-    def draw_card(x, y, w, h, radius=15):
-        # رسم الظل
-        shadow_offset = 5
-        draw.rounded_rectangle(
-            [x+shadow_offset, y+shadow_offset, x+w+shadow_offset, y+h+shadow_offset],
-            radius=radius, fill=colors['shadow']
-        )
-        # رسم البطاقة
-        draw.rounded_rectangle(
-            [x, y, x+w, y+h],
-            radius=radius, fill=colors['card_bg']
-        )
-    
-    # الهوامش والمسافات
-    margin = 60
-    card_padding = 30
-    
-    # رسم شعار DrugShift في الأعلى
-    logo_y = margin
-    draw_advanced_text("DrugShift", (width//2, logo_y), fonts['logo'], 
-                      colors['secondary_text'], anchor='ma', glow=True)
-    
-    # رسم خط فاصل تحت الشعار
-    line_y = logo_y + 60
-    draw.line([(margin*2, line_y), (width-margin*2, line_y)], 
-              fill=colors['accent_text'], width=2)
-    
-    # بطاقة اسم الدواء
-    name_card_y = line_y + 30
-    name_card_height = 120
-    draw_card(margin, name_card_y, width-2*margin, name_card_height)
-    
-    # اسم الدواء العربي (عنوان رئيسي)
-    name_ar = data['name_ar']
-    name_y = name_card_y + card_padding
-    draw_advanced_text(name_ar, (width//2, name_y), fonts['title'], 
-                      colors['primary_text'], anchor='ma', shadow=True, 
-                      max_width=width-2*margin-2*card_padding)
-    
-    # اسم الدواء الإنجليزي (عنوان فرعي)
-    name_en = data['name_en']
-    if name_en and name_en.strip() and name_en.lower() != 'name not available':
-        name_en_y = name_y + 50
-        draw_advanced_text(name_en, (width//2, name_en_y), fonts['subtitle'], 
-                          colors['secondary_text'], anchor='ma', 
-                          max_width=width-2*margin-2*card_padding)
-    
-    # بطاقة السعر الرئيسية
-    price_card_y = name_card_y + name_card_height + 40
-    price_card_height = 180
-    draw_card(margin, price_card_y, width-2*margin, price_card_height)
-    
-    # السعر الجديد مع خلفية ملونة
-    new_price = data['new_price']
-    percent = data.get('percent', '')
-    is_increase = percent.startswith('+')
-    is_decrease = percent.startswith('-')
-    
-    # تحديد لون السعر حسب التغيير
-    if is_increase:
-        price_color = colors['increase']
-        arrow = "📈"
-    elif is_decrease:
-        price_color = colors['decrease']
-        arrow = "📉"
-    else:
-        price_color = colors['neutral']
-        arrow = "💰"
-    
-    # رسم خلفية السعر
-    price_bg_y = price_card_y + 20
-    price_bg_height = 80
-    draw.rounded_rectangle(
-        [margin + card_padding, price_bg_y, width - margin - card_padding, price_bg_y + price_bg_height],
-        radius=40, fill=price_color
-    )
-    
-    # رسم السعر الجديد
-    price_text = f"{new_price} ج.م {arrow}"
-    price_y = price_bg_y + price_bg_height//2
-    draw_advanced_text(price_text, (width//2, price_y), fonts['price'], 
-                      colors['price_text'], anchor='ma', shadow=True, glow=True)
-    
-    # معلومات السعر السابق والنسبة
-    old_price_y = price_y + 60
-    old_price_text = f"السعر السابق: {data['old_price']} ج.م"
-    percent_text = f"نسبة التغيير: {data['percent']}"
-    
-    # رسم السعر السابق
-    draw_advanced_text(old_price_text, (width//4, old_price_y), fonts['old_price'], 
-                      colors['old_price'], anchor='ma')
-    
-    # رسم النسبة بلون مناسب
-    percent_color = colors['increase'] if is_increase else colors['decrease'] if is_decrease else colors['neutral']
-    draw_advanced_text(percent_text, (3*width//4, old_price_y), fonts['percent'], 
-                      percent_color, anchor='ma', shadow=True)
-    
-    # بطاقة التفاصيل
-    details_card_y = price_card_y + price_card_height + 30
-    details_card_height = 100
-    draw_card(margin, details_card_y, width-2*margin, details_card_height)
-    
-    # تفاصيل إضافية
-    details_y = details_card_y + card_padding
-    barcode_text = f"الباركود: {data.get('barcode', 'غير متوفر')}"
-    timestamp_text = f"آخر تحديث: {data['timestamp']}"
-    
-    draw_advanced_text(barcode_text, (width//2, details_y), fonts['details'], 
-                      colors['accent_text'], anchor='ma')
-    draw_advanced_text(timestamp_text, (width//2, details_y + 30), fonts['details'], 
-                      colors['accent_text'], anchor='ma')
-    
-    # رسم حدود زخرفية في الزوايا
-    corner_size = 30
-    corner_width = 4
-    corner_color = colors['secondary_text']
-    
-    # الزاوية العلوية اليسرى
-    draw.arc([margin, margin, margin + corner_size, margin + corner_size], 
-             180, 270, fill=corner_color, width=corner_width)
-    # الزاوية العلوية اليمنى
-    draw.arc([width - margin - corner_size, margin, width - margin, margin + corner_size], 
-             270, 360, fill=corner_color, width=corner_width)
-    # الزاوية السفلية اليسرى
-    draw.arc([margin, height - margin - corner_size, margin + corner_size, height - margin], 
-             90, 180, fill=corner_color, width=corner_width)
-    # الزاوية السفلية اليمنى
-    draw.arc([width - margin - corner_size, height - margin - corner_size, width - margin, height - margin], 
-             0, 90, fill=corner_color, width=corner_width)
-    
-    # إضافة تأثير النعومة النهائي
-    img = img.convert('RGB')
-    
-    # تطبيق تحسين الألوان
-    enhancer = ImageEnhance.Color(img)
-    img = enhancer.enhance(1.2)  # زيادة تشبع الألوان
-    
-    enhancer = ImageEnhance.Contrast(img)
-    img = enhancer.enhance(1.1)  # زيادة التباين قليلاً
-    
-    # حفظ الصورة بجودة عالية
-    img.save(output_path, 'PNG', quality=98, optimize=True, dpi=(300, 300))
-    
-    logger.info(f"تم إنشاء صورة الإشعار بنجاح: {output_path}")
-    logger.info(f"أبعاد الصورة: {width}x{height} بكسل")
-    
+    current_y += 60
+    draw_text_center_with_shadow("السعر الجديد", current_y, font_bold, color_text_light)
+    current_y += 85
+    draw_text_center_with_shadow(f"{data['new_price']} جنيه", current_y, font_price, color_new_price)
+    current_y += 65
+
+    percent_color = color_increase if '%' in data['percent'] and data['percent'].startswith('+') else color_decrease
+    price_change_text = f"السعر السابق: {data['old_price']} جنيه  |  نسبة التغيير: {data['percent']}"
+    draw_text_center_with_shadow(price_change_text, current_y, font_regular, percent_color)
+    current_y += 60
+
+    draw_text_center_with_shadow(f"Barcode: {data.get('barcode', 'N/A')}", current_y, font_footer, color_text_light)
+    current_y += 35
+    draw_text_center_with_shadow(data['timestamp'], current_y, font_footer, color_text_light)
+
+    img.save(output_path, "PNG", quality=95, optimize=True)
+    logger.info(f"تم حفظ الصورة بنجاح في '{output_path}'")
     return output_path
 
-
-async def send_telegram_message(message: str, client: TelegramClient) -> bool:
-    target_channel_str = os.environ.get("TARGET_CHANNEL")
-    if not target_channel_str:
-        logger.warning("TARGET_CHANNEL not set. Cannot send message.")
-        return False
-    try:
-        target_channel = int(target_channel_str) if target_channel_str.lstrip('-').isdigit() else target_channel_str
-        await client.send_message(target_channel, message, parse_mode='html')
-        logger.info(f"Notification sent successfully to channel {target_channel}.")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send Telegram message: {e}", exc_info=True)
-        return False
 
 async def send_telegram_image(image_path, client, caption=""):
     target_channel_str = os.environ.get("TARGET_CHANNEL")
@@ -435,112 +213,6 @@ async def send_telegram_image(image_path, client, caption=""):
     except Exception as e:
         logger.error(f"Failed to send Telegram image: {e}", exc_info=True)
         return False
-
-# --- NEW COMBINED LOGIC: Reconcile, Notify, and Upload ---
-async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_client: Optional[TelegramClient]):
-    if not supabase: logger.warning("Supabase client not initialized."); return
-    if not drugs: return
-
-    try:
-        all_ids_to_check = list({str(d["ID"]) for d in drugs if d.get("ID")})
-        if not all_ids_to_check: return
-
-        logger.info(f"[Supabase] Fetching latest history for {len(all_ids_to_check)} unique drug IDs.")
-        last_row_by_id = {}
-        BATCH_RPC_SIZE = 1000
-        for i in range(0, len(all_ids_to_check), BATCH_RPC_SIZE):
-            batch_ids = all_ids_to_check[i:i + BATCH_RPC_SIZE]
-            try:
-                rpc_query = supabase.rpc("get_latest_record_for_ids", {"p_ids": batch_ids}).execute
-                resp = await asyncio.to_thread(rpc_query)
-                if resp.data:
-                    for row in resp.data: last_row_by_id[row['id']] = row
-            except Exception as e:
-                logger.error(f"Error fetching history batch {i//BATCH_RPC_SIZE + 1}: {e}.")
-        
-        logger.info(f"[Supabase] Retrieved {len(last_row_by_id)} existing history records.")
-        
-        records_to_commit = []
-        for drug_data in drugs:
-            drug_id = str(drug_data.get("ID"))
-            if not drug_id: continue
-            last_db_record = last_row_by_id.get(drug_id)
-            if not last_db_record:
-                records_to_commit.append({'api_data': drug_data, 'db_data': None, 'is_new': True})
-                continue
-
-            api_price = drug_data.get("Current Price")
-            db_price = last_db_record.get("current_price")
-            if are_values_different(api_price, db_price):
-                logger.info(f"[COMPARE] Drug ID {drug_id}: API price = {api_price}, DB price = {db_price} -> DIFF detected")
-                records_to_commit.append({'api_data': drug_data, 'db_data': last_db_record, 'is_new': False})
-            else:
-                logger.info(f"[COMPARE] Drug ID {drug_id}: API price = {api_price}, DB price = {db_price} -> NO change")
-        
-        if not records_to_commit:
-            logger.info("No changes detected. All data is up-to-date."); return
-            
-        logger.info(f"Found {len(records_to_commit)} records with changes. Processing notifications before commit.")
-
-        final_records_to_upload = []
-        notifications_sent = 0
-        
-        for record in records_to_commit:
-            drug_data = record['api_data']
-            last_db_record = record['db_data']
-            
-            if record['is_new']:
-                final_records_to_upload.append(drug_data)
-                continue
-
-            api_price = drug_data.get("Current Price")
-            db_price = last_db_record.get("current_price")
-            if are_values_different(api_price, db_price):
-                logger.info(f"[NOTIFY] Price change detected for ID {drug_data['ID']}: {db_price} -> {api_price}")
-                notification_sent = False
-                if telegram_client and telegram_client.is_connected():
-                    try:
-                        image_data = get_notification_image_data({'previous': last_db_record, 'current': drug_data})
-                        # إرسال رسالة نصية فقط بدلاً من الصورة
-                        message = create_notification_message(image_data)
-                        notification_sent = await send_telegram_message(message, telegram_client)
-                    except Exception as e:
-                        logger.error(f"Error creating or sending notification message for ID {drug_data['ID']}: {e}")
-                else:
-                    logger.warning(f"Telegram client not available. Cannot send notification for ID {drug_data['ID']}.")
-                
-                if notification_sent:
-                    logger.info(f"Notification for ID {drug_data['ID']} SUCCEEDED. Queuing for DB update.")
-                    final_records_to_upload.append(drug_data)
-                    notifications_sent += 1
-                else:
-                    logger.warning(f"Notification for ID {drug_data['ID']} FAILED. Skipping DB update for this run to retry later.")
-            else:
-                logger.info(f"[SKIP] No price change for ID {drug_data['ID']}.")
-
-        logger.info(f"Processing complete. Total notifications sent: {notifications_sent}. Total records to upload: {len(final_records_to_upload)}.")
-        
-        if not final_records_to_upload: return
-
-        supabase_records = []
-        for record in final_records_to_upload:
-            new_row = {"scraped_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
-            for map_key, db_key in DB_FIELD_MAPPING.items():
-                new_row[db_key] = record.get(map_key)
-            supabase_records.append(new_row)
-            
-        BATCH_INSERT_SIZE = 500
-        for i in range(0, len(supabase_records), BATCH_INSERT_SIZE):
-            batch = supabase_records[i:i+BATCH_INSERT_SIZE]
-            try:
-                insert_query = supabase.table("history").insert(batch).execute
-                await asyncio.to_thread(insert_query)
-                logger.info(f"DB Upload: Batch {i//BATCH_INSERT_SIZE+1} ({len(batch)} records) uploaded successfully.")
-            except Exception as e:
-                logger.critical(f"CRITICAL ERROR: DB Upload failed for batch {i//BATCH_INSERT_SIZE+1}. Error: {e}")
-
-    except Exception as e:
-        logger.exception(f"An unhandled error occurred during process_and_commit_changes: {e}")
 
 def get_notification_image_data(change_info: Dict[str, Any]) -> Dict[str, Any]:
     """Prepares the data dictionary needed for creating the notification image."""
@@ -577,59 +249,125 @@ def get_notification_image_data(change_info: Dict[str, Any]) -> Dict[str, Any]:
         'timestamp': timestamp
     }
 
-def create_notification_message(data: dict) -> str:
+
+# --- MODIFIED: RPC-BASED LOGIC TO SOLVE EGRESS PROBLEM ---
+async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_client: Optional[TelegramClient]):
     """
-    ينشئ رسالة نصية احترافية وجذابة لإشعار تغير سعر الدواء مع تنسيق بصري متقدم.
+    This function uses a Supabase RPC call to find changed drugs, minimizing data transfer (Egress).
+    It sends all scraped data to a database function, which then returns only the differences.
     """
-    name_ar = data.get('name_ar', 'اسم غير متوفر')
-    name_en = data.get('name_en', '')
-    new_price = data.get('new_price', 'N/A')
-    old_price = data.get('old_price', 'N/A')
-    percent = data.get('percent', 'N/A')
-    barcode = data.get('barcode', '').strip()
-    timestamp = data.get('timestamp', '')
+    if not supabase: logger.warning("Supabase client not initialized."); return
+    if not drugs: return
 
-    # تحديد السهم واللون حسب نسبة التغيير
-    is_increase = percent.startswith('+')
-    is_decrease = percent.startswith('-')
-    arrow = '⬆️' if is_increase else ('⬇️' if is_decrease else '➡️')
-    percent_color = '🟢' if is_increase else '🔴' if is_decrease else '🟡'
-    percent_html = f"<b><span>{percent_color} {percent}</span></b>"
+    logger.info(f"Starting processing for {len(drugs)} unique drugs using RPC.")
 
-    # إبراز السعر الجديد بخلفية (عبر كود HTML)
-    new_price_html = f"<b><u><span style='background-color:#22223b;color:#f2e9e4;padding:2px 8px;border-radius:6px;'>{new_price} ج.م {arrow}</span></u></b>"
-    # شطب السعر السابق
-    old_price_html = f"<s>{old_price} ج.م</s>"
+    try:
+        # 1. Format the scraped data to match the structure of our SQL type
+        # This prepares the data to be sent to the PostgreSQL function.
+        drugs_for_rpc = []
+        for drug in drugs:
+            drugs_for_rpc.append({
+                "id": str(drug.get("ID")),
+                "commercial_name_en": drug.get("Commercial Name (English)"),
+                "commercial_name_ar": drug.get("Commercial Name (Arabic)"),
+                "active_ingredients": drug.get("Scientific Name/Active Ingredients"),
+                "manufacturer": drug.get("Manufacturer"),
+                "current_price": to_float_or_none(drug.get("Current Price")),
+                "units": drug.get("Units"),
+                "barcode": drug.get("Barcode"),
+                "dosage_form": drug.get("Dosage Form"),
+                "uses_ar": drug.get("Uses (Arabic)"),
+                "image_url": drug.get("Image URL"),
+                "last_price_update_date": drug.get("Last Price Update Date"),
+            })
 
-    # اسم الدواء مع إبراز ورمز
-    name_ar_html = f"<b><span style='color:#c9184a;font-size:20px;'>💊 {name_ar}</span></b>"
-    name_en_html = f"<i><span style='color:#adb5bd;font-size:13px;'>{name_en}</span></i>" if name_en and name_en.lower() != 'name not available' else ''
+        # 2. Call the RPC function with all drug data in a SINGLE request
+        # This is the key step to reduce Egress. All comparison logic is now on the database.
+        logger.info(f"Calling 'find_changed_drugs' RPC with {len(drugs_for_rpc)} records...")
+        rpc_response = await asyncio.to_thread(
+            lambda: supabase.rpc("find_changed_drugs", {"p_drugs": drugs_for_rpc}).execute()
+        )
+        
+        changed_drugs = rpc_response.data
+        logger.info(f"RPC call complete. Found {len(changed_drugs)} changed or new drugs.")
 
-    # خط فاصل
-    separator = '<b><span style="color:#adb5bd;">——————————————</span></b>'
+        if not changed_drugs:
+            logger.info("No changes detected by the database. All data is up-to-date.")
+            return
 
-    # الباركود والتاريخ بخط صغير ورمادي (بدون طباعة الباركود إذا لم يوجد)
-    barcode_clean = barcode.replace('غير متوفر', '').replace('لا يوجد', '').strip()
-    details_lines = []
-    if barcode_clean:
-        details_lines.append(f"<code>الباركود: {barcode_clean}</code>")
-    details_lines.append(f"<code>آخر تحديث: {timestamp}</code>")
-    details_html = '\n'.join(details_lines)
+        # 3. Process notifications ONLY for the changed drugs returned by the RPC
+        records_to_commit_to_db = []
+        for change in changed_drugs:
+            if change['change_type'] == 'NEW':
+                logger.info(f"Found new drug ID {change['id']}. Queuing for DB commit.")
+                records_to_commit_to_db.append(change)
+                continue  # No notification for brand new drugs, just add them to DB
 
-    # بناء الرسالة
-    msg = f"""
-{name_ar_html}
-{name_en_html}
-{separator}
-<b>السعر الجديد:</b> {new_price_html}
-<b>السعر السابق:</b> {old_price_html}
-<b>نسبة التغيير:</b> {percent_html}
-{separator}
-{details_html}
-    """
-    # إزالة أي أسطر فارغة زائدة
-    msg = '\n'.join([line for line in msg.splitlines() if line.strip()])
-    return msg
+            # This is a price update, so we need to send a notification
+            logger.info(f"Price change detected for ID {change['id']}: {change['previous_price']} -> {change['current_price']}")
+            
+            # Prepare data structures needed for the get_notification_image_data function
+            image_data_current = {
+                'Commercial Name (Arabic)': change.get('commercial_name_ar'),
+                'Commercial Name (English)': change.get('commercial_name_en'),
+                'Dosage Form': change.get('dosage_form'),
+                'Barcode': change.get('barcode'),
+                'Current Price': change.get('current_price')
+            }
+            image_data_previous = {'current_price': change.get('previous_price')}
+
+            notification_sent = False
+            if telegram_client and telegram_client.is_connected():
+                try:
+                    image_data = get_notification_image_data({'previous': image_data_previous, 'current': image_data_current})
+                    image_path = f"notification_{change['id']}.png"
+                    create_notification_image(image_data, output_path=image_path)
+                    notification_sent = await send_telegram_image(image_path, telegram_client)
+                    if os.path.exists(image_path): os.remove(image_path)
+                except Exception as e:
+                    logger.error(f"Error creating/sending notification for ID {change['id']}: {e}")
+
+            # Only add the record for DB commit if notification was successful
+            if notification_sent:
+                logger.info(f"Notification SUCCEEDED for ID {change['id']}. Queuing for DB commit.")
+                records_to_commit_to_db.append(change)
+            else:
+                logger.warning(f"Notification FAILED for ID {change['id']}. Skipping DB update for this run.")
+
+        # 4. Commit the verified changes to the database
+        if not records_to_commit_to_db:
+            logger.info("No records to commit after notification processing.")
+            return
+
+        db_payload = []
+        for record in records_to_commit_to_db:
+            # Map the RPC output fields back to the database column names
+            db_payload.append({
+                "id": record['id'],
+                "commercial_name_en": record['commercial_name_en'],
+                "commercial_name_ar": record['commercial_name_ar'],
+                "active_ingredients": record.get("active_ingredients"),
+                "manufacturer": record.get("manufacturer"),
+                "current_price": record['current_price'],
+                "previous_price": record.get('previous_price'), # This value now comes from the RPC
+                "last_price_update_date": record.get("last_price_update_date"),
+                "units": record.get("units"),
+                "barcode": record.get("barcode"),
+                "dosage_form": record.get("dosage_form"),
+                "uses_ar": record.get("uses_ar"),
+                "image_url": record.get("image_url"),
+                "scraped_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
+            })
+
+        logger.info(f"Committing {len(db_payload)} records to the database...")
+        # Upsert into 'drugs' (current state) and Insert into 'history' for logging
+        await asyncio.to_thread(lambda: supabase.table("drugs").upsert(db_payload).execute())
+        await asyncio.to_thread(lambda: supabase.table("history").insert(db_payload).execute())
+        logger.info("Database commit successful.")
+
+    except Exception as e:
+        logger.exception(f"An unhandled error occurred during RPC-based processing: {e}")
+
 
 # --- Main Execution ---
 async def main():
@@ -652,8 +390,7 @@ async def main():
         logger.warning("Telegram credentials not fully set. Notifications disabled.")
 
     if not API_URL:
-        logger.error("API_URL is not set. Cannot fetch drug data. Exiting.")
-        return
+        logger.error("API_URL is not set. Cannot fetch drug data. Exiting."); return
 
     all_raw_drugs = []
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
@@ -664,30 +401,29 @@ async def main():
             logger.info(f"Launching {len(tasks)} tasks to fetch data...")
             results = await asyncio.gather(*tasks)
             for _, drugs_from_batch in results:
-                if drugs_from_batch:
-                    all_raw_drugs.extend(drugs_from_batch)
+                if drugs_from_batch: all_raw_drugs.extend(drugs_from_batch)
 
         logger.info(f"Finished fetching API data. Found {len(all_raw_drugs)} raw records total.")
-
+        
         if all_raw_drugs:
             mapped_drugs = [map_api_record_to_internal(d) for d in all_raw_drugs if d]
             valid_mapped_drugs = [d for d in mapped_drugs if d]
             unique_drugs_dict = {d['ID']: d for d in valid_mapped_drugs if d.get('ID')}
             unique_drugs_list = list(unique_drugs_dict.values())
             logger.info(f"Processed into {len(unique_drugs_list)} unique drugs.")
-
+            
             if unique_drugs_list:
                 await process_and_commit_changes(unique_drugs_list, telegram_client_instance)
         else:
             logger.info("No drug data was fetched from the API across all queries.")
-
+            
     except Exception as e:
         logger.exception(f"An unhandled error occurred in the main execution loop: {e}")
     finally:
         if telegram_client_instance and telegram_client_instance.is_connected():
             await telegram_client_instance.disconnect()
             logger.info("Telegram client disconnected.")
-        execution_time = time.monotonic() - script_start_time
+        execution_time = time. monotonic() - script_start_time
         logger.info(f"Script finished execution in {execution_time:.2f} seconds.")
 
 if __name__ == "__main__":
