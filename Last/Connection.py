@@ -117,7 +117,7 @@ def format_text_notification(change_info: Dict[str, Any]) -> str:
     name_en = curr.get('Commercial Name (English)', 'N/A')
     active_ingredients = curr.get('Scientific Name/Active Ingredients')
     manufacturer = curr.get('Manufacturer')
-    barcode = curr.get('Barcode', 'غير متوفر')
+    barcode = curr.get('Barcode')
     
     new_price = to_decimal_or_none(curr.get('Current Price'))
     old_price = to_decimal_or_none(prev.get('current_price'))
@@ -166,7 +166,11 @@ def format_text_notification(change_info: Dict[str, Any]) -> str:
     
     message_parts.append("-----------------------------------")
     
-    message_parts.append(f"<b>الباركود:</b> <code>{barcode}</code>")
+    # --- التعديل المطلوب هنا ---
+    # إضافة سطر الباركود فقط في حال وجود قيمة حقيقية له
+    if barcode and str(barcode).strip() and str(barcode).strip() != '0':
+        message_parts.append(f"<b>الباركود:</b> <code>{barcode}</code>")
+    
     message_parts.append(f"آخر تحديث: {timestamp}")
 
     # تجميع كل أجزاء الرسالة في نص واحد
@@ -232,17 +236,19 @@ async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_clien
 
             logger.info(f"Price change detected for ID {change['id']}: {change['previous_price']} -> {change['current_price']}")
             
+            # Here we pass the full 'change' object which contains all necessary fields
             notification_data = {
-                'current': {
-                    'Commercial Name (Arabic)': change.get('commercial_name_ar'),
-                    'Commercial Name (English)': change.get('commercial_name_en'),
-                    'Scientific Name/Active Ingredients': change.get('active_ingredients'),
-                    'Manufacturer': change.get('manufacturer'),
-                    'Barcode': change.get('barcode'),
-                    'Current Price': change.get('current_price')
-                },
+                'current': change,
                 'previous': {'current_price': change.get('previous_price')}
             }
+            
+            # We need to map the keys to what the formatter function expects
+            notification_data['current']['Commercial Name (Arabic)'] = change.get('commercial_name_ar')
+            notification_data['current']['Commercial Name (English)'] = change.get('commercial_name_en')
+            notification_data['current']['Scientific Name/Active Ingredients'] = change.get('active_ingredients')
+            notification_data['current']['Manufacturer'] = change.get('manufacturer')
+            notification_data['current']['Barcode'] = change.get('barcode')
+            notification_data['current']['Current Price'] = change.get('current_price')
 
             notification_sent = False
             if telegram_client and telegram_client.is_connected():
