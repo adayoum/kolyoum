@@ -106,15 +106,19 @@ async def fetch_drug_data_for_query(session: aiohttp.ClientSession, search_query
     logger.error(f"API '{search_query}': All {MAX_RETRIES} retries failed.")
     return search_query, []
 
-# --- NEW Text Notification Logic ---
+# --- Text Notification Logic ---
 def format_text_notification(change_info: Dict[str, Any]) -> str:
-    """Formats the data into a clean, emoji-rich text message for Telegram."""
+    """Formats the data into a clean, emoji-rich, and detailed text message for Telegram."""
     curr = change_info['current']
     prev = change_info['previous']
     
-    name_ar = curr.get('Commercial Name (Arabic)', "N/A")
-    name_en = curr.get('Commercial Name (English)', "N/A")
-    barcode = curr.get('Barcode', "N/A")
+    # استخلاص كافة البيانات التي سنحتاجها
+    name_ar = curr.get('Commercial Name (Arabic)', 'غير متوفر')
+    name_en = curr.get('Commercial Name (English)', 'N/A')
+    active_ingredients = curr.get('Scientific Name/Active Ingredients')
+    manufacturer = curr.get('Manufacturer')
+    barcode = curr.get('Barcode', 'غير متوفر')
+    
     new_price = to_decimal_or_none(curr.get('Current Price'))
     old_price = to_decimal_or_none(prev.get('current_price'))
 
@@ -122,6 +126,7 @@ def format_text_notification(change_info: Dict[str, Any]) -> str:
     percent_emoji = ""
     percent_str = "N/A"
 
+    # منطق حساب النسبة والإيموجي
     if new_price is not None and old_price is not None and old_price > 0:
         if new_price > old_price:
             price_change_emoji = "⬆️"
@@ -142,19 +147,30 @@ def format_text_notification(change_info: Dict[str, Any]) -> str:
     cairo_tz = datetime.timezone(datetime.timedelta(hours=3))
     timestamp = datetime.datetime.now(cairo_tz).strftime('%Y-%m-%d — %I:%M %p')
 
-    # Using HTML for formatting in Telegram
-    message = (
-        f"<b>{name_ar}</b> 💊\n"
-        f"<i>{name_en}</i>\n"
-        f"-----------------------------------\n"
-        f"<b>السعر الجديد: {new_price_str} ج.م</b> {price_change_emoji}\n"
-        f"السعر السابق: {old_price_str} ج.م\n"
-        f"نسبة التغيير: {percent_str} {percent_emoji}\n"
-        f"-----------------------------------\n"
-        f"الباركود: <code>{barcode}</code>\n"
-        f"آخر تحديث: {timestamp}"
-    )
-    return message
+    # --- بناء الرسالة الجديدة الغنية بالمعلومات ---
+    message_parts = []
+    message_parts.append(f"<b>{name_ar}</b> 💊")
+    message_parts.append(f"<i>{name_en}</i>")
+
+    if active_ingredients and active_ingredients.strip():
+        message_parts.append(f"<b>المادة الفعالة:</b> {active_ingredients}")
+    
+    if manufacturer and manufacturer.strip():
+        message_parts.append(f"<b>الشركة المصنعة:</b> {manufacturer}")
+
+    message_parts.append("-----------------------------------")
+    
+    message_parts.append(f"<b>السعر الجديد: {new_price_str} ج.م</b> {price_change_emoji}")
+    message_parts.append(f"السعر السابق: {old_price_str} ج.م")
+    message_parts.append(f"نسبة التغيير: {percent_str} {percent_emoji}")
+    
+    message_parts.append("-----------------------------------")
+    
+    message_parts.append(f"<b>الباركود:</b> <code>{barcode}</code>")
+    message_parts.append(f"آخر تحديث: {timestamp}")
+
+    # تجميع كل أجزاء الرسالة في نص واحد
+    return "\n".join(message_parts)
 
 async def send_telegram_message(message: str, client: TelegramClient) -> bool:
     """Sends a formatted text message to the target Telegram channel."""
@@ -214,14 +230,14 @@ async def process_and_commit_changes(drugs: List[Dict[str, Any]], telegram_clien
                 records_to_commit_to_db.append(change)
                 continue
 
-            # This is a price update, send a text notification
             logger.info(f"Price change detected for ID {change['id']}: {change['previous_price']} -> {change['current_price']}")
             
-            # Prepare data for the text formatter
             notification_data = {
                 'current': {
                     'Commercial Name (Arabic)': change.get('commercial_name_ar'),
                     'Commercial Name (English)': change.get('commercial_name_en'),
+                    'Scientific Name/Active Ingredients': change.get('active_ingredients'),
+                    'Manufacturer': change.get('manufacturer'),
                     'Barcode': change.get('barcode'),
                     'Current Price': change.get('current_price')
                 },
